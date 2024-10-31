@@ -3,42 +3,32 @@ pub mod helpers;
 #[cfg(test)]
 mod view {
 
-    use cosmwasm_std::{Addr, Uint128, Uint256};
-    use cw_multi_test::{Executor, IntoBech32};
-    use helpers::{contract_wrapper, mint_inj, mock_app_with_validator, stake};
+    use cosmwasm_std::{Addr, Decimal, Uint128, Uint256};
+    use cw_multi_test::{IntoBech32, StakingSudo};
+    use helpers::{mint_inj, stake};
     use injective_staker::constants::INJ;
     use injective_staker::msg::{
         GetDistributionAmountsResponse, GetMaxWithdrawResponse, GetTotalAssetsResponse,
     };
     use injective_staker::{
-        msg::{GetSharePriceResponse, GetTotalSupplyResponse, InstantiateMsg, QueryMsg},
+        msg::{GetSharePriceResponse, GetTotalSupplyResponse, QueryMsg},
         SHARE_PRICE_SCALING_FACTOR,
     };
     use injective_staker::{FEE_PRECISION, ONE_INJ};
 
     use crate::helpers::{
-        self, add_validator, add_validator_to_app, allocate, claimable_amount, convert_to_assets,
-        get_delegation, get_max_withdraw, get_share_price, get_share_price_num_denom,
-        get_total_rewards, get_total_staked, instantiate_staker,
-        instantiate_staker_with_min_deposit, instantiate_staker_with_min_deposit_and_initial_stake,
-        move_days_forward, set_dist_fee, set_up_allocation, unstake, whitelist_user,
+        self, add_validator, allocate, claimable_amount, convert_to_assets, get_delegation,
+        get_max_withdraw, get_share_price, get_share_price_num_denom, get_total_rewards,
+        get_total_staked, instantiate_staker, instantiate_staker_with_min_deposit,
+        instantiate_staker_with_min_deposit_and_initial_stake, move_days_forward, set_dist_fee,
+        set_up_allocation, unstake, unstake_when_rewards_accrue, whitelist_user,
     };
 
     #[test]
     fn test_get_total_supply() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
-        let msg = InstantiateMsg {
-            treasury: "treasury".into_bech32(),
-            default_validator: validator_addr,
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner.clone(), &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (mut app, contract_addr, _) =
+            instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         let anyone: Addr = "anyone".into_bech32();
 
@@ -68,23 +58,12 @@ mod view {
 
     #[test]
     fn test_get_total_staked_without_staking_multi_validator() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
-        let msg = InstantiateMsg {
-            treasury: "treasury".into_bech32(),
-            default_validator: validator_addr,
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner.clone(), &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (mut app, contract_addr, _) =
+            instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         // add a second validator:
         let validator = "validator".into_bech32();
-        add_validator_to_app(&mut app, validator.to_string());
         add_validator(&mut app, owner, &contract_addr, validator).unwrap();
 
         let total_staked = get_total_staked(&app, &contract_addr);
@@ -96,19 +75,8 @@ mod view {
 
     #[test]
     fn test_get_total_staked_without_staking() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
-        let msg = InstantiateMsg {
-            treasury: "treasury".into_bech32(),
-            default_validator: validator_addr,
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner, &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (app, contract_addr, _) = instantiate_staker(owner, "treasury".into_bech32());
 
         let total_staked = get_total_staked(&app, &contract_addr);
         let total_rewards = get_total_rewards(&app, &contract_addr);
@@ -119,19 +87,9 @@ mod view {
 
     #[test]
     fn test_get_total_staked_with_staking() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
-        let msg = InstantiateMsg {
-            treasury: "treasury".into_bech32(),
-            default_validator: validator_addr,
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner.clone(), &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (mut app, contract_addr, _) =
+            instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         // mint INJ tokens to the 'anyone' user
         let anyone: Addr = "anyone".into_bech32();
@@ -153,23 +111,12 @@ mod view {
 
     #[test]
     fn test_get_total_staked_with_multi_validators() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
-        let msg = InstantiateMsg {
-            treasury: "treasury".into_bech32(),
-            default_validator: validator_addr,
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner.clone(), &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (mut app, contract_addr, _) =
+            instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         // add a second validator:
         let validator = "validator".into_bech32();
-        add_validator_to_app(&mut app, validator.to_string());
         add_validator(&mut app, owner.clone(), &contract_addr, validator).unwrap();
 
         let anyone: Addr = "anyone".into_bech32();
@@ -240,7 +187,6 @@ mod view {
 
         // add a second validator:
         let validator = "validator".into_bech32();
-        add_validator_to_app(&mut app, validator.to_string());
         add_validator(&mut app, owner.clone(), &contract_addr, validator).unwrap();
 
         let anyone: Addr = "anyone".into_bech32();
@@ -281,29 +227,29 @@ mod view {
 
     #[test]
     fn test_get_total_assets() {
-        let (mut app, staker_contract, _) =
+        let (mut app, staker_addr, _) =
             instantiate_staker("owner".into_bech32(), "treasury".into_bech32());
 
         // mint INJ tokens to the staker contract
         let staker_assets = 1234 * ONE_INJ;
-        mint_inj(&mut app, &staker_contract.addr(), staker_assets);
+        mint_inj(&mut app, &staker_addr, staker_assets);
 
         let response: GetTotalAssetsResponse = app
             .wrap()
-            .query_wasm_smart(staker_contract.addr(), &QueryMsg::GetTotalAssets {})
+            .query_wasm_smart(staker_addr, &QueryMsg::GetTotalAssets {})
             .unwrap();
 
-        assert_eq!(response.total_assets.u128(), staker_assets);
+        assert_eq!(response.total_assets.u128(), staker_assets + 1); // +1 for reserve amount
     }
 
     #[test]
     fn test_get_share_price_when_no_shares_exist() {
-        let (app, staker_contract, _) =
+        let (app, staker_addr, _) =
             instantiate_staker("owner".into_bech32(), "treasury".into_bech32());
 
         let response: GetSharePriceResponse = app
             .wrap()
-            .query_wasm_smart(staker_contract.addr(), &QueryMsg::GetSharePrice {})
+            .query_wasm_smart(staker_addr, &QueryMsg::GetSharePrice {})
             .unwrap();
 
         assert_eq!(
@@ -345,13 +291,40 @@ mod view {
     #[test]
     fn test_get_share_price_increases_with_multiple_validators() {
         let owner = "owner".into_bech32();
-        let (mut app, staker_contract, _) =
+        let (mut app, staker_addr, _) =
             instantiate_staker_with_min_deposit(owner.clone(), "treasury".into_bech32(), 100000);
 
         // add a second validator
         let second_validator = "second-validator".into_bech32();
-        add_validator_to_app(&mut app, second_validator.to_string());
-        add_validator(&mut app, owner.clone(), &staker_contract, second_validator).unwrap();
+        add_validator(&mut app, owner.clone(), &staker_addr, second_validator).unwrap();
+
+        // stake some INJ
+        let alice: Addr = "alice".into_bech32();
+        whitelist_user(&mut app, &staker_addr, &owner, &alice);
+        let stake_amount = 1000000000000;
+        mint_inj(&mut app, &alice, stake_amount);
+        stake(&mut app, &alice, &staker_addr, stake_amount).unwrap();
+
+        // verify initial share price
+        let share_price_day_0 = get_share_price(&app, &staker_addr);
+        assert_eq!(share_price_day_0, SHARE_PRICE_SCALING_FACTOR);
+
+        // accrue rewards and verify share price increases
+        move_days_forward(&mut app, 1);
+        let share_price_day_1 = get_share_price(&app, &staker_addr);
+        assert!(share_price_day_1 > share_price_day_0);
+
+        // accrue rewards and verify share price increases
+        move_days_forward(&mut app, 1);
+        let share_price_day_2 = get_share_price(&app, &staker_addr);
+        assert!(share_price_day_2 > share_price_day_1);
+    }
+
+    #[test]
+    fn test_get_share_price_with_slashing() {
+        let owner = "owner".into_bech32();
+        let (mut app, staker_contract, validator_addr) =
+            instantiate_staker_with_min_deposit(owner.clone(), "treasury".into_bech32(), 100000);
 
         // stake some INJ
         let alice: Addr = "alice".into_bech32();
@@ -364,28 +337,32 @@ mod view {
         let share_price_day_0 = get_share_price(&app, &staker_contract);
         assert_eq!(share_price_day_0, SHARE_PRICE_SCALING_FACTOR);
 
-        // accrue rewards and verify share price increases
+        // Slash the validator by 50%
+        app.sudo(cw_multi_test::SudoMsg::Staking(StakingSudo::Slash {
+            validator: validator_addr.to_string(),
+            percentage: Decimal::percent(50),
+        }))
+        .unwrap();
+
+        // verify share price decreases
         move_days_forward(&mut app, 1);
         let share_price_day_1 = get_share_price(&app, &staker_contract);
-        assert!(share_price_day_1 > share_price_day_0);
-
-        // accrue rewards and verify share price increases
-        move_days_forward(&mut app, 1);
-        let share_price_day_2 = get_share_price(&app, &staker_contract);
-        assert!(share_price_day_2 > share_price_day_1);
+        assert!(share_price_day_1 < share_price_day_0);
     }
 
     #[test]
     fn test_max_withdraw_with_no_deposits() {
         let owner = "owner".into_bech32();
-        let (app, staker_contract, _) = instantiate_staker(owner, "treasury".into_bech32());
+        let (app, staker_addr, _) = instantiate_staker(owner, "treasury".into_bech32());
 
         let alice = "alice".into_bech32();
         let response: GetMaxWithdrawResponse = app
             .wrap()
             .query_wasm_smart(
-                staker_contract.addr(),
-                &QueryMsg::GetMaxWithdraw { user: alice },
+                staker_addr,
+                &QueryMsg::GetMaxWithdraw {
+                    user: alice.to_string(),
+                },
             )
             .unwrap();
 
@@ -415,7 +392,7 @@ mod view {
             .query_wasm_smart(
                 staker_addr.clone(),
                 &QueryMsg::GetMaxWithdraw {
-                    user: alice.clone(),
+                    user: alice.to_string(),
                 },
             )
             .unwrap();
@@ -432,7 +409,7 @@ mod view {
             .query_wasm_smart(
                 staker_addr.clone(),
                 &QueryMsg::GetMaxWithdraw {
-                    user: alice.clone(),
+                    user: alice.to_string(),
                 },
             )
             .unwrap();
@@ -462,7 +439,7 @@ mod view {
             .query_wasm_smart(
                 staker_addr.clone(),
                 &QueryMsg::GetMaxWithdraw {
-                    user: alice.clone(),
+                    user: alice.to_string(),
                 },
             )
             .unwrap();
@@ -724,8 +701,8 @@ mod view {
             .query_wasm_smart(
                 staker_addr.clone(),
                 &QueryMsg::GetDistributionAmounts {
-                    distributor: distributor.clone(),
-                    recipient: Some(recipient.clone()),
+                    distributor: distributor.to_string(),
+                    recipient: Some(recipient.to_string()),
                 },
             )
             .unwrap();
@@ -793,8 +770,8 @@ mod view {
             .query_wasm_smart(
                 staker_addr.clone(),
                 &QueryMsg::GetDistributionAmounts {
-                    distributor,
-                    recipient: Some("non-recipient".into_bech32()),
+                    distributor: distributor.to_string(),
+                    recipient: Some("non-recipient".into_bech32().into_string()),
                 },
             )
             .unwrap();
@@ -870,7 +847,7 @@ mod view {
             .query_wasm_smart(
                 staker_addr.clone(),
                 &QueryMsg::GetDistributionAmounts {
-                    distributor: distributor.clone(),
+                    distributor: distributor.to_string(),
                     recipient: None,
                 },
             )
@@ -947,7 +924,7 @@ mod view {
             .query_wasm_smart(
                 staker_addr,
                 &QueryMsg::GetDistributionAmounts {
-                    distributor: "other-distributor".into_bech32(),
+                    distributor: "other-distributor".into_bech32().into_string(),
                     recipient: None,
                 },
             )
@@ -961,6 +938,39 @@ mod view {
                 inj_amount: Uint128::zero(),
                 distribution_fee: Uint128::zero(),
             },
+        );
+    }
+
+    #[test]
+    fn test_max_withdraw_after_slashing() {
+        let owner = "owner".into_bech32();
+        let (mut app, staker_addr, validator_addr) =
+            instantiate_staker_with_min_deposit(owner.clone(), "treasury".into_bech32(), 0);
+
+        // mint some INJ tokens to alice
+        let alice: Addr = "alice".into_bech32();
+        mint_inj(&mut app, &alice, 100_000_000);
+        whitelist_user(&mut app, &staker_addr, &owner, &alice);
+
+        // alice stakes 100_000
+        stake(&mut app, &alice, &staker_addr, 100_000).unwrap();
+
+        // alice unstakes 50_000
+        unstake_when_rewards_accrue(&mut app, &alice, &staker_addr, 50_000, &validator_addr)
+            .unwrap();
+
+        // slash the validator by 50%
+        let pre_max_withdraw = get_max_withdraw(&app, &staker_addr, &alice);
+        app.sudo(cw_multi_test::SudoMsg::Staking(StakingSudo::Slash {
+            validator: validator_addr.to_string(),
+            percentage: Decimal::percent(50),
+        }))
+        .unwrap();
+
+        // verify alice max withdraw is now half the pre-slash amount
+        assert_eq!(
+            get_max_withdraw(&app, &staker_addr, &alice),
+            pre_max_withdraw / 2
         );
     }
 }

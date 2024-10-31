@@ -9,11 +9,11 @@ mod staker_init {
     use injective_staker::{
         msg::{GetStakerInfoResponse, GetValidatorResponse, InstantiateMsg, QueryMsg},
         state::{ValidatorInfo, ValidatorState},
-        ONE_INJ,
+        INJ, ONE_INJ,
     };
     use injective_test_tube::{Account, InjectiveTestApp, Module, Wasm};
 
-    use crate::helpers;
+    use crate::helpers::{self, mint_inj};
 
     #[test]
     fn test_instantiate_staker() {
@@ -25,15 +25,15 @@ mod staker_init {
 
         let staker_info: GetStakerInfoResponse = app
             .wrap()
-            .query_wasm_smart(staking_contract.addr(), &QueryMsg::GetStakerInfo {})
+            .query_wasm_smart(staking_contract.clone(), &QueryMsg::GetStakerInfo {})
             .unwrap();
 
         assert_eq!(
             staker_info,
             GetStakerInfoResponse {
-                default_validator: default_validator.clone(),
-                owner,
-                treasury,
+                default_validator: default_validator.to_string(),
+                owner: owner.to_string(),
+                treasury: treasury.to_string(),
                 fee: 0,
                 distribution_fee: 0,
                 min_deposit: ONE_INJ.into(),
@@ -43,15 +43,15 @@ mod staker_init {
 
         let response: GetValidatorResponse = app
             .wrap()
-            .query_wasm_smart(staking_contract.addr(), &QueryMsg::GetValidators {})
+            .query_wasm_smart(staking_contract, &QueryMsg::GetValidators {})
             .unwrap();
 
         assert_eq!(
             response.validators,
             vec![ValidatorInfo {
                 total_staked: Uint128::zero(),
-                state: ValidatorState::ENABLED,
-                addr: default_validator,
+                state: ValidatorState::Enabled,
+                addr: default_validator.to_string(),
             }]
         );
     }
@@ -65,15 +65,17 @@ mod staker_init {
         let code_id = app.store_code(contract_wrapper());
 
         let msg = InstantiateMsg {
-            treasury: treasury.clone(),
-            default_validator: validator_addr.clone(),
+            owner: owner.to_string(),
+            treasury: treasury.to_string(),
+            default_validator: validator_addr.to_string(),
         };
 
+        mint_inj(&mut app, &owner, 1);
         let msg = WasmMsg::Instantiate {
             admin: Some(owner.to_string()),
             code_id,
             msg: to_json_binary(&msg).unwrap(),
-            funds: [].to_vec(),
+            funds: [Coin::new(1u128, INJ)].to_vec(),
             label: "staker-contract".into(),
         };
         let init_response = app.execute(owner.clone(), msg.into());
@@ -130,12 +132,13 @@ mod staker_init {
         let response = wasm.instantiate(
             code_id,
             &InstantiateMsg {
-                treasury: Addr::unchecked(treasury.address()),
-                default_validator: Addr::unchecked(validator),
+                owner: admin.address(),
+                treasury: treasury.address(),
+                default_validator: validator,
             },
             None,
             Some("Test Staker"),
-            &[],
+            &[Coin::new(1u128, INJ)],
             admin,
         );
 

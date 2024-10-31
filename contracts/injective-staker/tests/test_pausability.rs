@@ -20,18 +20,18 @@ mod pausability {
         let (mut app, staker_contract, _) = instantiate_staker(owner.clone(), treasury);
 
         // verify the contract is not paused
-        let staker_info = query_staker_info(&app, &staker_contract.addr());
+        let staker_info = query_staker_info(&app, &staker_contract);
         assert!(!staker_info.is_paused);
 
         // pause contract
         let response = app.execute(
             owner,
-            wasm_execute_msg(&staker_contract.addr(), &ExecuteMsg::Pause).into(),
+            wasm_execute_msg(&staker_contract, &ExecuteMsg::Pause).into(),
         );
         assert!(response.is_ok());
 
         // verify the contract is paused
-        let staker_info = query_staker_info(&app, &staker_contract.addr());
+        let staker_info = query_staker_info(&app, &staker_contract);
         assert!(staker_info.is_paused);
     }
 
@@ -45,7 +45,7 @@ mod pausability {
         // pause contract
         let response = app.execute(
             owner,
-            wasm_execute_msg(&staker_contract.addr(), &ExecuteMsg::Pause).into(),
+            wasm_execute_msg(&staker_contract, &ExecuteMsg::Pause).into(),
         );
         assert!(response.is_ok());
 
@@ -54,7 +54,7 @@ mod pausability {
             &response.unwrap().events,
             "wasm-paused",
             vec![],
-            staker_contract.addr(),
+            staker_contract,
         );
     }
 
@@ -69,7 +69,7 @@ mod pausability {
         // try to pause the contract
         let response = app.execute(
             non_onwer,
-            wasm_execute_msg(&staker_contract.addr(), &ExecuteMsg::Pause).into(),
+            wasm_execute_msg(&staker_contract, &ExecuteMsg::Pause).into(),
         );
         assert!(response.is_err());
 
@@ -85,14 +85,14 @@ mod pausability {
         let (mut app, staker_contract, _) = instantiate_staker(owner.clone(), treasury);
 
         // pause the contract
-        pause(&mut app, &staker_contract.addr(), &owner);
-        let staker_info = query_staker_info(&app, &staker_contract.addr());
+        pause(&mut app, &staker_contract, &owner);
+        let staker_info = query_staker_info(&app, &staker_contract);
         assert!(staker_info.is_paused);
 
         // try to pause contract again
         let response = app.execute(
             owner,
-            wasm_execute_msg(&staker_contract.addr(), &ExecuteMsg::Pause).into(),
+            wasm_execute_msg(&staker_contract, &ExecuteMsg::Pause).into(),
         );
         assert!(response.is_err());
 
@@ -110,19 +110,19 @@ mod pausability {
         let (mut app, staker_contract, _) = instantiate_staker(owner.clone(), treasury);
 
         // pause the contract
-        pause(&mut app, &staker_contract.addr(), &owner);
-        let staker_info = query_staker_info(&app, &staker_contract.addr());
+        pause(&mut app, &staker_contract, &owner);
+        let staker_info = query_staker_info(&app, &staker_contract);
         assert!(staker_info.is_paused);
 
         // unpause the contract
         let response = app.execute(
             owner,
-            wasm_execute_msg(&staker_contract.addr(), &ExecuteMsg::Unpause).into(),
+            wasm_execute_msg(&staker_contract, &ExecuteMsg::Unpause).into(),
         );
         assert!(response.is_ok());
 
         // verify the contract is unpaused
-        let staker_info = query_staker_info(&app, &staker_contract.addr());
+        let staker_info = query_staker_info(&app, &staker_contract);
         assert!(!staker_info.is_paused);
     }
 
@@ -132,12 +132,12 @@ mod pausability {
         let treasury = "treasury".into_bech32();
 
         let (mut app, staker_contract, _) = instantiate_staker(owner.clone(), treasury);
-        pause(&mut app, &staker_contract.addr(), &owner);
+        pause(&mut app, &staker_contract, &owner);
 
         // unpause the contract
         let response = app.execute(
             owner,
-            wasm_execute_msg(&staker_contract.addr(), &ExecuteMsg::Unpause).into(),
+            wasm_execute_msg(&staker_contract, &ExecuteMsg::Unpause).into(),
         );
         assert!(response.is_ok());
 
@@ -146,7 +146,7 @@ mod pausability {
             &response.unwrap().events,
             "wasm-unpaused",
             vec![],
-            staker_contract.addr(),
+            staker_contract,
         );
     }
 
@@ -159,12 +159,12 @@ mod pausability {
         let (mut app, staker_contract, _) = instantiate_staker(owner.clone(), treasury);
 
         // pause the contract
-        pause(&mut app, &staker_contract.addr(), &owner);
+        pause(&mut app, &staker_contract, &owner);
 
         // try to unpause the contract
         let response = app.execute(
             non_onwer,
-            wasm_execute_msg(&staker_contract.addr(), &ExecuteMsg::Pause).into(),
+            wasm_execute_msg(&staker_contract, &ExecuteMsg::Pause).into(),
         );
         assert!(response.is_err());
 
@@ -180,13 +180,13 @@ mod pausability {
         let (mut app, staker_contract, _) = instantiate_staker(owner.clone(), treasury);
 
         // verify the contract is not paused
-        let staker_info = query_staker_info(&app, &staker_contract.addr());
+        let staker_info = query_staker_info(&app, &staker_contract);
         assert!(!staker_info.is_paused);
 
         // try to unpause contract
         let response = app.execute(
             owner,
-            wasm_execute_msg(&staker_contract.addr(), &ExecuteMsg::Unpause).into(),
+            wasm_execute_msg(&staker_contract, &ExecuteMsg::Unpause).into(),
         );
         assert!(response.is_err());
 

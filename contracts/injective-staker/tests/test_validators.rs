@@ -3,18 +3,18 @@ pub mod helpers;
 #[cfg(test)]
 mod validators {
 
-    use cosmwasm_std::{Addr, Attribute, Uint128};
-    use cw_multi_test::IntoBech32;
+    use cosmwasm_std::{to_json_binary, Addr, Attribute, Uint128, WasmMsg};
+    use cw_multi_test::{Executor, IntoBech32};
 
     use helpers::instantiate_staker;
     use injective_staker::{
-        msg::{GetValidatorResponse, QueryMsg},
+        msg::{ExecuteMsg, GetValidatorResponse, QueryMsg},
         state::{ValidatorInfo, ValidatorState},
         ContractError,
     };
 
     use crate::helpers::{
-        self, add_validator, add_validator_to_app, disable_validator, enable_validator,
+        self, add_validator, assert_error, disable_validator, enable_validator,
         instantiate_staker_with_min_deposit, mint_inj, stake_to_specific_validator, whitelist_user,
     };
 
@@ -24,21 +24,13 @@ mod validators {
         let treasury: Addr = "treasury".into_bech32();
         let new_validator: Addr = "validator".into_bech32();
 
-        let (mut app, staking_contract, default_validator) =
-            instantiate_staker(owner.clone(), treasury);
+        let (mut app, staker_addr, default_validator) = instantiate_staker(owner.clone(), treasury);
 
-        add_validator_to_app(&mut app, new_validator.to_string());
-        add_validator(
-            &mut app,
-            owner,
-            &staking_contract.addr(),
-            new_validator.clone(),
-        )
-        .unwrap();
+        add_validator(&mut app, owner, &staker_addr, new_validator.clone()).unwrap();
 
         let response: GetValidatorResponse = app
             .wrap()
-            .query_wasm_smart(staking_contract.addr(), &QueryMsg::GetValidators {})
+            .query_wasm_smart(staker_addr, &QueryMsg::GetValidators {})
             .unwrap();
         assert_eq!(response.validators.len(), 2);
 
@@ -47,13 +39,13 @@ mod validators {
             vec![
                 ValidatorInfo {
                     total_staked: Uint128::zero(),
-                    state: ValidatorState::ENABLED,
-                    addr: default_validator,
+                    state: ValidatorState::Enabled,
+                    addr: default_validator.to_string(),
                 },
                 ValidatorInfo {
                     total_staked: Uint128::zero(),
-                    state: ValidatorState::ENABLED,
-                    addr: new_validator,
+                    state: ValidatorState::Enabled,
+                    addr: new_validator.to_string(),
                 }
             ]
         );
@@ -68,7 +60,6 @@ mod validators {
 
         // add a second validator
         let second_validator: Addr = "validator".into_bech32();
-        add_validator_to_app(&mut app, second_validator.to_string());
         add_validator(
             &mut app,
             owner.clone(),
@@ -115,13 +106,13 @@ mod validators {
             vec![
                 ValidatorInfo {
                     total_staked: first_stake,
-                    state: ValidatorState::ENABLED,
-                    addr: default_validator.clone(),
+                    state: ValidatorState::Enabled,
+                    addr: default_validator.to_string(),
                 },
                 ValidatorInfo {
                     total_staked: second_stake,
-                    state: ValidatorState::ENABLED,
-                    addr: second_validator.clone(),
+                    state: ValidatorState::Enabled,
+                    addr: second_validator.to_string(),
                 }
             ]
         );
@@ -133,11 +124,11 @@ mod validators {
         let treasury: Addr = "treasury".into_bech32();
         let validator: Addr = "validator".into_bech32();
 
-        let (mut app, staking_contract, _default_validator) =
+        let (mut app, staker_addr, _default_validator) =
             instantiate_staker(owner.clone(), treasury);
 
         let add_validator_response =
-            add_validator(&mut app, owner, &staking_contract.addr(), validator.clone());
+            add_validator(&mut app, owner, &staker_addr, validator.clone());
 
         let response = add_validator_response.unwrap();
         let add_validator_event = response.events.last().unwrap();
@@ -158,21 +149,43 @@ mod validators {
         let treasury: Addr = "treasury".into_bech32();
         let validator: Addr = "validator".into_bech32();
 
-        let (mut app, staking_contract, _) = instantiate_staker(owner.clone(), treasury);
+        let (mut app, staker_addr, _) = instantiate_staker(owner.clone(), treasury);
 
-        add_validator(
-            &mut app,
-            owner.clone(),
-            &staking_contract.addr(),
-            validator.clone(),
-        )
-        .unwrap();
-        let err = add_validator(&mut app, owner, &staking_contract.addr(), validator).unwrap_err();
+        add_validator(&mut app, owner.clone(), &staker_addr, validator.clone()).unwrap();
+        let msg = ExecuteMsg::AddValidator {
+            validator: validator.to_string(),
+        };
 
-        assert_eq!(
-            ContractError::ValidatorAlreadyExists,
-            err.downcast().unwrap()
-        );
+        let cosmos_msg = WasmMsg::Execute {
+            contract_addr: staker_addr.to_string(),
+            msg: to_json_binary(&msg).unwrap(),
+            funds: vec![],
+        };
+        let err = app.execute(owner, cosmos_msg.into());
+
+        assert_error(err, "Validator already exists");
+    }
+
+    #[test]
+    fn test_add_non_existent_validator_fails() {
+        let owner: Addr = "owner".into_bech32();
+        let treasury: Addr = "treasury".into_bech32();
+        let validator: Addr = "validator".into_bech32();
+
+        let (mut app, staker_addr, _) = instantiate_staker(owner.clone(), treasury);
+
+        let msg = ExecuteMsg::AddValidator {
+            validator: validator.to_string(),
+        };
+
+        let cosmos_msg = WasmMsg::Execute {
+            contract_addr: staker_addr.to_string(),
+            msg: to_json_binary(&msg).unwrap(),
+            funds: vec![],
+        };
+        let err = app.execute(owner, cosmos_msg.into());
+
+        assert_error(err, "Validator is not in validator set");
     }
 
     #[test]
@@ -181,10 +194,9 @@ mod validators {
         let treasury: Addr = "treasury".into_bech32();
         let validator: Addr = "validator".into_bech32();
 
-        let (mut app, staking_contract, _) = instantiate_staker(owner, treasury.clone());
+        let (mut app, staker_addr, _) = instantiate_staker(owner, treasury.clone());
 
-        let err =
-            add_validator(&mut app, treasury, &staking_contract.addr(), validator).unwrap_err();
+        let err = add_validator(&mut app, treasury, &staker_addr, validator).unwrap_err();
 
         assert_eq!(ContractError::OnlyOwner {}, err.downcast().unwrap());
     }
@@ -195,10 +207,9 @@ mod validators {
         let treasury: Addr = "treasury".into_bech32();
         let validator: Addr = "validator".into_bech32();
 
-        let (mut app, staking_contract, _) = instantiate_staker(owner, treasury.clone());
+        let (mut app, staker_addr, _) = instantiate_staker(owner, treasury.clone());
 
-        let err =
-            enable_validator(&mut app, treasury, &staking_contract.addr(), validator).unwrap_err();
+        let err = enable_validator(&mut app, treasury, &staker_addr, validator).unwrap_err();
 
         assert_eq!(ContractError::OnlyOwner {}, err.downcast().unwrap());
     }
@@ -209,10 +220,9 @@ mod validators {
         let treasury: Addr = "treasury".into_bech32();
         let validator: Addr = "validator".into_bech32();
 
-        let (mut app, staking_contract, _) = instantiate_staker(owner, treasury.clone());
+        let (mut app, staker_addr, _) = instantiate_staker(owner, treasury.clone());
 
-        let err =
-            disable_validator(&mut app, treasury, &staking_contract.addr(), validator).unwrap_err();
+        let err = disable_validator(&mut app, treasury, &staker_addr, validator).unwrap_err();
 
         assert_eq!(ContractError::OnlyOwner {}, err.downcast().unwrap());
     }
@@ -223,25 +233,16 @@ mod validators {
         let treasury: Addr = "treasury".into_bech32();
         let validator: Addr = "validator".into_bech32();
 
-        let (mut app, staking_contract, default_validator) =
-            instantiate_staker(owner.clone(), treasury);
+        let (mut app, staker_addr, default_validator) = instantiate_staker(owner.clone(), treasury);
 
-        add_validator_to_app(&mut app, validator.to_string());
-        add_validator(
-            &mut app,
-            owner.clone(),
-            &staking_contract.addr(),
-            validator.clone(),
-        )
-        .unwrap();
+        add_validator(&mut app, owner.clone(), &staker_addr, validator.clone()).unwrap();
 
         let disable_validator_response =
-            disable_validator(&mut app, owner, &staking_contract.addr(), validator.clone())
-                .unwrap();
+            disable_validator(&mut app, owner, &staker_addr, validator.clone()).unwrap();
 
         let response: GetValidatorResponse = app
             .wrap()
-            .query_wasm_smart(staking_contract.addr(), &QueryMsg::GetValidators {})
+            .query_wasm_smart(staker_addr, &QueryMsg::GetValidators {})
             .unwrap();
         assert_eq!(response.validators.len(), 2);
 
@@ -250,13 +251,13 @@ mod validators {
             vec![
                 ValidatorInfo {
                     total_staked: Uint128::zero(),
-                    state: ValidatorState::ENABLED,
-                    addr: default_validator,
+                    state: ValidatorState::Enabled,
+                    addr: default_validator.to_string(),
                 },
                 ValidatorInfo {
                     total_staked: Uint128::zero(),
-                    state: ValidatorState::DISABLED,
-                    addr: validator.clone(),
+                    state: ValidatorState::Disabled,
+                    addr: validator.to_string(),
                 }
             ]
         );
@@ -280,31 +281,17 @@ mod validators {
         let treasury: Addr = "treasury".into_bech32();
         let validator: Addr = "validator".into_bech32();
 
-        let (mut app, staking_contract, default_validator) =
-            instantiate_staker(owner.clone(), treasury);
+        let (mut app, staker_addr, default_validator) = instantiate_staker(owner.clone(), treasury);
 
-        add_validator_to_app(&mut app, validator.to_string());
-        add_validator(
-            &mut app,
-            owner.clone(),
-            &staking_contract.addr(),
-            validator.clone(),
-        )
-        .unwrap();
+        add_validator(&mut app, owner.clone(), &staker_addr, validator.clone()).unwrap();
 
-        disable_validator(
-            &mut app,
-            owner.clone(),
-            &staking_contract.addr(),
-            validator.clone(),
-        )
-        .unwrap();
+        disable_validator(&mut app, owner.clone(), &staker_addr, validator.clone()).unwrap();
         let enabled_validator_response =
-            enable_validator(&mut app, owner, &staking_contract.addr(), validator.clone()).unwrap();
+            enable_validator(&mut app, owner, &staker_addr, validator.clone()).unwrap();
 
         let response: GetValidatorResponse = app
             .wrap()
-            .query_wasm_smart(staking_contract.addr(), &QueryMsg::GetValidators {})
+            .query_wasm_smart(staker_addr, &QueryMsg::GetValidators {})
             .unwrap();
         assert_eq!(response.validators.len(), 2);
 
@@ -313,13 +300,13 @@ mod validators {
             vec![
                 ValidatorInfo {
                     total_staked: Uint128::zero(),
-                    state: ValidatorState::ENABLED,
-                    addr: default_validator,
+                    state: ValidatorState::Enabled,
+                    addr: default_validator.to_string(),
                 },
                 ValidatorInfo {
                     total_staked: Uint128::zero(),
-                    state: ValidatorState::ENABLED,
-                    addr: validator.clone(),
+                    state: ValidatorState::Enabled,
+                    addr: validator.to_string(),
                 }
             ]
         );
@@ -343,17 +330,10 @@ mod validators {
         let treasury: Addr = "treasury".into_bech32();
         let validator: Addr = "validator".into_bech32();
 
-        let (mut app, staking_contract, _) = instantiate_staker(owner.clone(), treasury);
+        let (mut app, staker_addr, _) = instantiate_staker(owner.clone(), treasury);
 
-        add_validator(
-            &mut app,
-            owner.clone(),
-            &staking_contract.addr(),
-            validator.clone(),
-        )
-        .unwrap();
-        let err =
-            enable_validator(&mut app, owner, &staking_contract.addr(), validator).unwrap_err();
+        add_validator(&mut app, owner.clone(), &staker_addr, validator.clone()).unwrap();
+        let err = enable_validator(&mut app, owner, &staker_addr, validator).unwrap_err();
 
         assert_eq!(
             ContractError::ValidatorAlreadyEnabled,
@@ -367,10 +347,9 @@ mod validators {
         let treasury: Addr = "treasury".into_bech32();
         let validator: Addr = "validator".into_bech32();
 
-        let (mut app, staking_contract, _) = instantiate_staker(owner.clone(), treasury);
+        let (mut app, staker_addr, _) = instantiate_staker(owner.clone(), treasury);
 
-        let err =
-            enable_validator(&mut app, owner, &staking_contract.addr(), validator).unwrap_err();
+        let err = enable_validator(&mut app, owner, &staker_addr, validator).unwrap_err();
 
         assert_eq!(
             ContractError::ValidatorDoesNotExist,
@@ -384,10 +363,9 @@ mod validators {
         let treasury: Addr = "treasury".into_bech32();
         let validator: Addr = "validator".into_bech32();
 
-        let (mut app, staking_contract, _) = instantiate_staker(owner.clone(), treasury);
+        let (mut app, staker_addr, _) = instantiate_staker(owner.clone(), treasury);
 
-        let err =
-            disable_validator(&mut app, owner, &staking_contract.addr(), validator).unwrap_err();
+        let err = disable_validator(&mut app, owner, &staker_addr, validator).unwrap_err();
 
         assert_eq!(
             ContractError::ValidatorDoesNotExist,
@@ -401,24 +379,11 @@ mod validators {
         let treasury: Addr = "treasury".into_bech32();
         let validator: Addr = "validator".into_bech32();
 
-        let (mut app, staking_contract, _) = instantiate_staker(owner.clone(), treasury);
+        let (mut app, staker_addr, _) = instantiate_staker(owner.clone(), treasury);
 
-        add_validator(
-            &mut app,
-            owner.clone(),
-            &staking_contract.addr(),
-            validator.clone(),
-        )
-        .unwrap();
-        disable_validator(
-            &mut app,
-            owner.clone(),
-            &staking_contract.addr(),
-            validator.clone(),
-        )
-        .unwrap();
-        let err =
-            disable_validator(&mut app, owner, &staking_contract.addr(), validator).unwrap_err();
+        add_validator(&mut app, owner.clone(), &staker_addr, validator.clone()).unwrap();
+        disable_validator(&mut app, owner.clone(), &staker_addr, validator.clone()).unwrap();
+        let err = disable_validator(&mut app, owner, &staker_addr, validator).unwrap_err();
 
         assert_eq!(
             ContractError::ValidatorAlreadyDisabled,

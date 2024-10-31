@@ -5,34 +5,20 @@ mod compound_rewards {
 
     use cosmwasm_std::{to_json_binary, Addr, Uint128, WasmMsg};
     use cw_multi_test::{Executor, IntoBech32};
-    use helpers::{contract_wrapper, mint_inj, mock_app_with_validator, stake};
-    use injective_staker::{
-        msg::{ExecuteMsg, InstantiateMsg},
-        FEE_PRECISION, SHARE_PRICE_SCALING_FACTOR,
-    };
+    use helpers::{mint_inj, stake};
+    use injective_staker::{msg::ExecuteMsg, FEE_PRECISION, SHARE_PRICE_SCALING_FACTOR};
 
     use crate::helpers::{
-        self, add_validator, add_validator_to_app, assert_event_with_attributes, get_share_price,
-        get_total_rewards, get_total_staked, move_days_forward, query_truinj_balance,
+        self, add_validator, assert_event_with_attributes, get_share_price, get_total_rewards,
+        get_total_staked, instantiate_staker, move_days_forward, query_truinj_balance,
         set_min_deposit_for_test_overflow, stake_to_specific_validator, whitelist_user,
     };
 
     #[test]
     fn test_compound_rewards() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
-        let treasury = "treasury".into_bech32();
-        let msg = InstantiateMsg {
-            treasury,
-            default_validator: validator_addr,
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner.clone(), &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (mut app, contract_addr, _) =
+            instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         let anyone: Addr = "anyone".into_bech32();
 
@@ -82,20 +68,9 @@ mod compound_rewards {
 
     #[test]
     fn test_compound_rewards_multi_validators() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
-        let treasury = "treasury".into_bech32();
-        let msg = InstantiateMsg {
-            treasury,
-            default_validator: validator_addr,
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner.clone(), &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (mut app, contract_addr, _) =
+            instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         let anyone: Addr = "anyone".into_bech32();
 
@@ -106,7 +81,6 @@ mod compound_rewards {
         set_min_deposit_for_test_overflow(&mut app, contract_addr.to_string(), owner.clone(), 0);
 
         let second_validator: Addr = "second_validator".into_bech32();
-        add_validator_to_app(&mut app, second_validator.to_string());
         add_validator(
             &mut app,
             owner.clone(),
@@ -116,7 +90,6 @@ mod compound_rewards {
         .unwrap();
 
         let third_validator: Addr = "third_validator".into_bech32();
-        add_validator_to_app(&mut app, third_validator.to_string());
         add_validator(
             &mut app,
             owner.clone(),
@@ -126,7 +99,6 @@ mod compound_rewards {
         .unwrap();
 
         let fourth_validator: Addr = "fourth_validator".into_bech32();
-        add_validator_to_app(&mut app, fourth_validator.to_string());
         add_validator(&mut app, owner.clone(), &contract_addr, fourth_validator).unwrap();
 
         // whitelist user
@@ -189,20 +161,9 @@ mod compound_rewards {
 
     #[test]
     fn test_compound_rewards_with_fees() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
         let treasury = "treasury".into_bech32();
-        let msg = InstantiateMsg {
-            treasury: treasury.clone(),
-            default_validator: validator_addr,
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner.clone(), &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (mut app, contract_addr, _) = instantiate_staker(owner.clone(), treasury.clone());
 
         let anyone: Addr = "anyone".into_bech32();
 
@@ -269,20 +230,9 @@ mod compound_rewards {
 
     #[test]
     fn test_compound_rewards_when_no_rewards_have_accrued() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
         let treasury = "treasury".into_bech32();
-        let msg = InstantiateMsg {
-            treasury: treasury.clone(),
-            default_validator: validator_addr,
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner.clone(), &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (mut app, contract_addr, _) = instantiate_staker(owner.clone(), treasury.clone());
 
         let anyone: Addr = "anyone".into_bech32();
 

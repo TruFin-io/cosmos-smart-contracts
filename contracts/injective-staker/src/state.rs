@@ -1,5 +1,6 @@
 use cosmwasm_schema::cw_serde;
-use cosmwasm_std::{Addr, Uint128, Uint256};
+use cosmwasm_std::{Addr, BankMsg, Event, Uint128, Uint256};
+use cw20::Expiration;
 use cw_controllers::Claims;
 use cw_storage_plus::{Index, IndexList, IndexedMap, Item, Map, MultiIndex};
 use std::fmt;
@@ -13,22 +14,17 @@ pub struct StakerInfo {
 }
 
 #[cw_serde]
-pub struct Validator {
-    pub state: ValidatorState,
-}
-
-#[cw_serde]
 pub struct ValidatorInfo {
     pub total_staked: Uint128,
     pub state: ValidatorState,
-    pub addr: Addr,
+    pub addr: String,
 }
 
 #[cw_serde]
 pub enum ValidatorState {
-    NONE,
-    ENABLED,
-    DISABLED,
+    None,
+    Enabled,
+    Disabled,
 }
 
 #[cw_serde]
@@ -74,23 +70,14 @@ pub fn allocations<'a>() -> IndexedMap<(Addr, Addr), Allocation, AllocationIndex
 }
 
 pub struct DistributionInfo {
-    pub user: Addr,
-    pub recipient: Addr,
-    pub user_balance: u128,
-    pub recipient_balance: u128,
-    pub fees: u128,
-    pub treasury_balance: u128,
-    pub shares: u128,
-    pub inj_amount: u128,
-    pub in_inj: bool,
-    pub share_price_num: Uint256,
-    pub share_price_denom: Uint256,
     pub refund_amount: u128,
+    pub distribution_event: Event,
+    pub inj_transfer: Option<BankMsg>,
 }
 
 pub const STAKER_INFO: Item<StakerInfo> = Item::new("staker_info");
-pub const VALIDATORS: Map<&Addr, Validator> = Map::new("validators");
-pub const DEFAULT_VALIDATOR: Item<Addr> = Item::new("default_validator");
+pub const VALIDATORS: Map<&String, ValidatorState> = Map::new("validators");
+pub const DEFAULT_VALIDATOR: Item<String> = Item::new("default_validator");
 pub const WHITELIST_AGENTS: Map<&Addr, ()> = Map::new("whitelist_agents");
 pub const OWNER: Item<Addr> = Item::new("owner");
 pub const PENDING_OWNER: Item<Addr> = Item::new("pending_owner");
@@ -115,5 +102,18 @@ impl fmt::Display for UserStatus {
             Self::Blacklisted => "blacklisted",
         };
         write!(f, "{}", status_str)
+    }
+}
+
+pub trait GetValueTrait {
+    fn get_value(&self) -> u64;
+}
+impl GetValueTrait for Expiration {
+    fn get_value(&self) -> u64 {
+        match self {
+            Expiration::AtHeight(height) => *height,
+            Expiration::AtTime(time) => time.seconds(),
+            Expiration::Never {} => 0,
+        }
     }
 }

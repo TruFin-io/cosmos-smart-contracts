@@ -1,10 +1,10 @@
 pub mod helpers;
 
 #[cfg(test)]
-mod distribution {
+mod distribute_rewards {
 
-    use cosmwasm_std::{coin, to_json_binary, WasmMsg};
-    use cw_multi_test::{Executor, IntoBech32};
+    use cosmwasm_std::{coin, to_json_binary, Decimal, WasmMsg};
+    use cw_multi_test::{Executor, IntoBech32, StakingSudo};
     use injective_staker::{msg::ExecuteMsg, INJ};
 
     use crate::helpers::{
@@ -61,7 +61,7 @@ mod distribution {
             WasmMsg::Execute {
                 contract_addr: staker_addr.to_string(),
                 msg: to_json_binary(&ExecuteMsg::DistributeRewards {
-                    recipient: recipient.clone(),
+                    recipient: recipient.to_string(),
                     in_inj: false,
                 })
                 .unwrap(),
@@ -88,7 +88,6 @@ mod distribution {
         // verify the treasury balance was increased by the expected amount of fees
         assert_eq!(treasury_truinj_balance, fees);
 
-        // verify the unstaked event was emitted
         let (
             total_allocated_amount,
             total_allocated_share_price_num,
@@ -97,7 +96,7 @@ mod distribution {
 
         assert_event_with_attributes(
             &dist_res.unwrap().events,
-            "wasm-distributed-rewards",
+            "wasm-distributed_rewards",
             vec![
                 ("user", distributor).into(),
                 ("recipient", recipient).into(),
@@ -123,6 +122,76 @@ mod distribution {
                     .into(),
             ],
             staker_addr,
+        );
+    }
+
+    #[test]
+    fn test_distribute_rewards_after_slashing_distributes_no_rewards() {
+        let owner = "owner".into_bech32();
+        let treasury = "treasury".into_bech32();
+        let (mut app, staker_addr, validator_addr) =
+            instantiate_staker_with_min_deposit(owner.clone(), treasury, 0);
+
+        // set up an allocation at the current share price
+        let distributor = "distributor".into_bech32();
+        let recipient = "recipient".into_bech32();
+        let allocation_amount = 100_000;
+        set_up_test_allocation(
+            &mut app,
+            &owner,
+            &staker_addr,
+            &distributor,
+            &recipient,
+            allocation_amount,
+        );
+
+        // accrue rewards
+        move_days_forward(&mut app, 30);
+
+        // slash the validator by 50%
+        app.sudo(cw_multi_test::SudoMsg::Staking(StakingSudo::Slash {
+            validator: validator_addr.to_string(),
+            percentage: Decimal::percent(50),
+        }))
+        .unwrap();
+
+        // distribute rewards to recipient in trunj
+        let distributor_pre_truinj_balance = query_truinj_balance(&app, &distributor, &staker_addr);
+        let recipient_pre_truinj_balance = query_truinj_balance(&app, &recipient, &staker_addr);
+        let dist_res = app.execute(
+            distributor.clone(),
+            WasmMsg::Execute {
+                contract_addr: staker_addr.to_string(),
+                msg: to_json_binary(&ExecuteMsg::DistributeRewards {
+                    recipient: recipient.to_string(),
+                    in_inj: false,
+                })
+                .unwrap(),
+                funds: vec![],
+            }
+            .into(),
+        );
+        assert!(dist_res.is_ok());
+
+        // verify the distributor and recipient balances did not change
+        assert_eq!(
+            query_truinj_balance(&app, &distributor, &staker_addr),
+            distributor_pre_truinj_balance
+        );
+        assert_eq!(
+            query_truinj_balance(&app, &recipient, &staker_addr),
+            recipient_pre_truinj_balance
+        );
+
+        // verify no wasm-distributed-rewards event were emitted
+        assert_eq!(
+            dist_res
+                .unwrap()
+                .events
+                .into_iter()
+                .filter(|e| e.ty == "wasm-distributed-rewards")
+                .count(),
+            0
         );
     }
 
@@ -163,7 +232,7 @@ mod distribution {
             WasmMsg::Execute {
                 contract_addr: staker_addr.to_string(),
                 msg: to_json_binary(&ExecuteMsg::DistributeRewards {
-                    recipient: recipient.clone(),
+                    recipient: recipient.to_string(),
                     in_inj: false,
                 })
                 .unwrap(),
@@ -185,13 +254,13 @@ mod distribution {
         let treasury_truinj_balance = query_truinj_balance(&app, &treasury, &staker_addr);
         assert_eq!(treasury_truinj_balance, 0);
 
-        // verify no wasm-distributed-rewards event were emitted
+        // verify no wasm-distributed_rewards event were emitted
         assert_eq!(
             dist_res
                 .unwrap()
                 .events
                 .into_iter()
-                .filter(|e| e.ty == "wasm-distributed-rewards")
+                .filter(|e| e.ty == "wasm-distributed_rewards")
                 .count(),
             0
         );
@@ -232,7 +301,7 @@ mod distribution {
             WasmMsg::Execute {
                 contract_addr: staker_addr.to_string(),
                 msg: to_json_binary(&ExecuteMsg::DistributeRewards {
-                    recipient: recipient.clone(),
+                    recipient: recipient.to_string(),
                     in_inj: false,
                 })
                 .unwrap(),
@@ -288,7 +357,7 @@ mod distribution {
             WasmMsg::Execute {
                 contract_addr: staker_addr.to_string(),
                 msg: to_json_binary(&ExecuteMsg::DistributeRewards {
-                    recipient: recipient.clone(),
+                    recipient: recipient.to_string(),
                     in_inj: false,
                 })
                 .unwrap(),
@@ -318,7 +387,7 @@ mod distribution {
             WasmMsg::Execute {
                 contract_addr: staker_addr.to_string(),
                 msg: to_json_binary(&ExecuteMsg::DistributeRewards {
-                    recipient: "recipient".into_bech32(),
+                    recipient: "recipient".into_bech32().into_string(),
                     in_inj: false,
                 })
                 .unwrap(),
@@ -355,7 +424,7 @@ mod distribution {
             WasmMsg::Execute {
                 contract_addr: staker_addr.to_string(),
                 msg: to_json_binary(&ExecuteMsg::DistributeRewards {
-                    recipient: "someone else".into_bech32(),
+                    recipient: "someone else".into_bech32().into_string(),
                     in_inj: false,
                 })
                 .unwrap(),
@@ -396,7 +465,7 @@ mod distribution {
             WasmMsg::Execute {
                 contract_addr: staker_addr.to_string(),
                 msg: to_json_binary(&ExecuteMsg::DistributeRewards {
-                    recipient: recipient.clone(),
+                    recipient: recipient.to_string(),
                     in_inj: false,
                 })
                 .unwrap(),
@@ -438,7 +507,7 @@ mod distribution {
             WasmMsg::Execute {
                 contract_addr: staker_addr.to_string(),
                 msg: to_json_binary(&ExecuteMsg::DistributeRewards {
-                    recipient: recipient.clone(),
+                    recipient: recipient.to_string(),
                     in_inj: false,
                 })
                 .unwrap(),
@@ -493,7 +562,7 @@ mod distribution {
             WasmMsg::Execute {
                 contract_addr: staker_addr.to_string(),
                 msg: to_json_binary(&ExecuteMsg::DistributeRewards {
-                    recipient: recipient.clone(),
+                    recipient: recipient.to_string(),
                     in_inj: true,
                 })
                 .unwrap(),
@@ -521,7 +590,6 @@ mod distribution {
         // verify the treasury received the expected amount of fees
         assert_eq!(treasury_truinj_balance, fees);
 
-        // verify the unstaked event was emitted
         let (
             total_allocated_amount,
             total_allocated_share_price_num,
@@ -530,7 +598,7 @@ mod distribution {
 
         assert_event_with_attributes(
             &dist_res.unwrap().events,
-            "wasm-distributed-rewards",
+            "wasm-distributed_rewards",
             vec![
                 ("user", distributor).into(),
                 ("recipient", recipient).into(),
@@ -588,7 +656,7 @@ mod distribution {
             WasmMsg::Execute {
                 contract_addr: staker_addr.to_string(),
                 msg: to_json_binary(&ExecuteMsg::DistributeRewards {
-                    recipient: recipient.clone(),
+                    recipient: recipient.to_string(),
                     in_inj: true,
                 })
                 .unwrap(),
@@ -606,13 +674,13 @@ mod distribution {
         let treasury_truinj_balance = query_truinj_balance(&app, &treasury, &staker_addr);
         assert_eq!(treasury_truinj_balance, 0);
 
-        // verify no wasm-distributed-rewards event were emitted
+        // verify no wasm-distributed_rewards event were emitted
         assert_eq!(
             dist_res
                 .unwrap()
                 .events
                 .into_iter()
-                .filter(|e| e.ty == "wasm-distributed-rewards")
+                .filter(|e| e.ty == "wasm-distributed_rewards")
                 .count(),
             0
         );
@@ -658,7 +726,7 @@ mod distribution {
             WasmMsg::Execute {
                 contract_addr: staker_addr.to_string(),
                 msg: to_json_binary(&ExecuteMsg::DistributeRewards {
-                    recipient: recipient.clone(),
+                    recipient: recipient.to_string(),
                     in_inj: true,
                 })
                 .unwrap(),
@@ -710,7 +778,7 @@ mod distribution {
             WasmMsg::Execute {
                 contract_addr: staker_addr.to_string(),
                 msg: to_json_binary(&ExecuteMsg::DistributeRewards {
-                    recipient: recipient.clone(),
+                    recipient: recipient.to_string(),
                     in_inj: true,
                 })
                 .unwrap(),
@@ -761,7 +829,7 @@ mod distribution {
             WasmMsg::Execute {
                 contract_addr: staker_addr.to_string(),
                 msg: to_json_binary(&ExecuteMsg::DistributeRewards {
-                    recipient: recipient.clone(),
+                    recipient: recipient.to_string(),
                     in_inj: true,
                 })
                 .unwrap(),
@@ -822,7 +890,7 @@ mod distribution {
             WasmMsg::Execute {
                 contract_addr: staker_addr.to_string(),
                 msg: to_json_binary(&ExecuteMsg::DistributeRewards {
-                    recipient: recipient.clone(),
+                    recipient: recipient.to_string(),
                     in_inj: true,
                 })
                 .unwrap(),

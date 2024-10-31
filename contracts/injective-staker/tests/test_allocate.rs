@@ -3,33 +3,22 @@ pub mod helpers;
 #[cfg(test)]
 mod allocate {
 
-    use cosmwasm_std::{Addr, Uint128, Uint256};
-    use cw_multi_test::{Executor, IntoBech32};
-    use helpers::{contract_wrapper, mock_app_with_validator};
-    use injective_staker::{msg::InstantiateMsg, ONE_INJ, SHARE_PRICE_SCALING_FACTOR};
+    use cosmwasm_std::{Addr, Decimal, Uint128, Uint256};
+    use cw_multi_test::{IntoBech32, StakingSudo};
+    use injective_staker::{ONE_INJ, SHARE_PRICE_SCALING_FACTOR};
 
     use crate::helpers::{
-        self, allocate, assert_error, assert_event_with_attributes, get_allocations,
-        get_share_price, get_share_price_num_denom, get_total_allocated,
+        allocate, assert_error, assert_event_with_attributes, get_allocations, get_share_price,
+        get_share_price_num_denom, get_total_allocated, instantiate_staker,
         instantiate_staker_with_min_deposit_and_initial_stake, move_days_forward, pause,
         set_up_allocation,
     };
 
     #[test]
     fn test_first_allocation() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
-        let msg = InstantiateMsg {
-            treasury: "treasury".into_bech32(),
-            default_validator: validator_addr,
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner.clone(), &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (mut app, contract_addr, _) =
+            instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         let anyone: Addr = "anyone".into_bech32();
         let recipient: Addr = "recipient".into_bech32();
@@ -65,19 +54,9 @@ mod allocate {
 
     #[test]
     fn test_multiple_recipients() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
-        let msg = InstantiateMsg {
-            treasury: "treasury".into_bech32(),
-            default_validator: validator_addr,
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner.clone(), &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (mut app, contract_addr, _) =
+            instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         let anyone: Addr = "anyone".into_bech32();
         let recipient: Addr = "recipient".into_bech32();
@@ -135,19 +114,9 @@ mod allocate {
 
     #[test]
     fn test_multiple_allocations() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
-        let msg = InstantiateMsg {
-            treasury: "treasury".into_bech32(),
-            default_validator: validator_addr,
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner.clone(), &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (mut app, contract_addr, _) =
+            instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         let allocator: Addr = "anyone".into_bech32();
         let allocator2: Addr = "allocator2".into_bech32();
@@ -220,19 +189,9 @@ mod allocate {
 
     #[test]
     fn test_allocate_to_same_person_twice_same_share_price() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
-        let msg = InstantiateMsg {
-            treasury: "treasury".into_bech32(),
-            default_validator: validator_addr,
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner.clone(), &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (mut app, contract_addr, _) =
+            instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         let anyone: Addr = "anyone".into_bech32();
         let recipient: Addr = "recipient".into_bech32();
@@ -264,20 +223,58 @@ mod allocate {
     }
 
     #[test]
-    fn test_allocate_to_self_fails() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
+    fn test_allocate_to_same_person_twice_with_slashing() {
         let owner = "owner".into_bech32();
-        let msg = InstantiateMsg {
-            treasury: "treasury".into_bech32(),
-            default_validator: validator_addr,
-        };
+        let (mut app, contract_addr, validator_addr) =
+            instantiate_staker(owner.clone(), "treasury".into_bech32());
 
-        let contract_addr = app
-            .instantiate_contract(code_id, owner.clone(), &msg, &[], "staker-contract", None)
-            .unwrap();
+        let anyone: Addr = "anyone".into_bech32();
+        let recipient: Addr = "recipient".into_bech32();
+
+        // set up for the allocation
+        set_up_allocation(
+            &mut app,
+            &owner,
+            &contract_addr,
+            10000000000000000000,
+            &anyone,
+        );
+
+        let pre_share_price = get_share_price(&app, &contract_addr);
+
+        allocate(&mut app, &anyone, &contract_addr, ONE_INJ, &recipient).unwrap();
+
+        // Slash the validator by 50%
+        app.sudo(cw_multi_test::SudoMsg::Staking(StakingSudo::Slash {
+            validator: validator_addr.to_string(),
+            percentage: Decimal::percent(50),
+        }))
+        .unwrap();
+
+        allocate(&mut app, &anyone, &contract_addr, ONE_INJ * 2, &recipient).unwrap();
+
+        let share_price = get_share_price(&app, &contract_addr);
+
+        let allocations = get_allocations(&app, &contract_addr, &anyone);
+        assert_eq!(allocations.len(), 1);
+
+        assert_eq!(allocations[0].recipient, recipient);
+        assert_eq!(allocations[0].inj_amount.u128(), ONE_INJ * 3);
+        assert_eq!(allocations[0].allocator, anyone);
+        assert!(
+            allocations[0].share_price_num / allocations[0].share_price_denom > share_price.into()
+        );
+        assert!(
+            allocations[0].share_price_num / allocations[0].share_price_denom
+                < pre_share_price.into()
+        );
+    }
+
+    #[test]
+    fn test_allocate_to_self_fails() {
+        let owner = "owner".into_bech32();
+        let (mut app, contract_addr, _) =
+            instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         let anyone: Addr = "anyone".into_bech32();
 
@@ -295,19 +292,9 @@ mod allocate {
 
     #[test]
     fn test_allocate_below_one_inj_fails() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
-        let msg = InstantiateMsg {
-            treasury: "treasury".into_bech32(),
-            default_validator: validator_addr,
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner.clone(), &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (mut app, contract_addr, _) =
+            instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         let anyone: Addr = "anyone".into_bech32();
         let recipient: Addr = "recipient".into_bech32();
@@ -326,19 +313,8 @@ mod allocate {
 
     #[test]
     fn test_allocate_non_whitelisted_fails() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
-        let msg = InstantiateMsg {
-            treasury: "treasury".into_bech32(),
-            default_validator: validator_addr,
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner, &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (mut app, contract_addr, _) = instantiate_staker(owner, "treasury".into_bech32());
 
         let anyone: Addr = "anyone".into_bech32();
         let recipient: Addr = "recipient".into_bech32();
@@ -349,19 +325,9 @@ mod allocate {
 
     #[test]
     fn test_allocate_when_contract_paused_fails() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
-        let msg = InstantiateMsg {
-            treasury: "treasury".into_bech32(),
-            default_validator: validator_addr,
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner.clone(), &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (mut app, contract_addr, _) =
+            instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         let anyone: Addr = "anyone".into_bech32();
         let recipient: Addr = "recipient".into_bech32();
@@ -383,19 +349,9 @@ mod allocate {
 
     #[test]
     fn test_allocate_with_non_existent_recipient_fails() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
-        let msg = InstantiateMsg {
-            treasury: "treasury".into_bech32(),
-            default_validator: validator_addr,
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner.clone(), &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (mut app, contract_addr, _) =
+            instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         let anyone: Addr = "anyone".into_bech32();
         let recipient: Addr = Addr::unchecked("recipient");
@@ -415,19 +371,9 @@ mod allocate {
 
     #[test]
     fn test_get_total_allocated_with_one_allocation() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
-        let msg = InstantiateMsg {
-            treasury: "treasury".into_bech32(),
-            default_validator: validator_addr,
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner.clone(), &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (mut app, contract_addr, _) =
+            instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         let anyone: Addr = "anyone".into_bech32();
         let recipient: Addr = "recipient".into_bech32();
@@ -454,19 +400,8 @@ mod allocate {
 
     #[test]
     fn test_total_allocated_for_user_with_no_allocations() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
-        let msg = InstantiateMsg {
-            treasury: "treasury".into_bech32(),
-            default_validator: validator_addr,
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner, &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (app, contract_addr, _) = instantiate_staker(owner, "treasury".into_bech32());
 
         let anyone: Addr = "anyone".into_bech32();
 

@@ -4,17 +4,17 @@ pub mod helpers;
 mod stake {
 
     use crate::helpers::{
-        self, add_validator, add_validator_to_app, assert_error, assert_event_with_attributes,
-        disable_validator, get_share_price, get_share_price_num_denom, get_total_rewards,
-        get_total_staked, instantiate_staker_with_min_deposit_and_initial_stake, move_days_forward,
-        pause, query_truinj_balance, query_truinj_supply, set_fee, stake_to_specific_validator,
-        stake_when_rewards_accrued, whitelist_user,
+        self, add_validator, assert_error, assert_event_with_attributes, disable_validator,
+        get_share_price, get_share_price_num_denom, get_total_rewards, get_total_staked,
+        instantiate_staker, instantiate_staker_with_min_deposit_and_initial_stake,
+        move_days_forward, pause, query_truinj_balance, query_truinj_supply, set_fee,
+        stake_to_specific_validator, stake_when_rewards_accrued, whitelist_user,
     };
-    use cosmwasm_std::{Addr, Uint128, Uint256};
-    use cw_multi_test::{Executor, IntoBech32};
-    use helpers::{contract_wrapper, mint_inj, mock_app_with_validator, stake};
+    use cosmwasm_std::{Addr, Decimal, Uint128, Uint256};
+    use cw_multi_test::{IntoBech32, StakingSudo};
+    use helpers::{mint_inj, stake};
     use injective_staker::{
-        msg::{GetTotalAssetsResponse, InstantiateMsg, QueryMsg},
+        msg::{GetTotalAssetsResponse, QueryMsg},
         FEE_PRECISION, ONE_INJ, SHARE_PRICE_SCALING_FACTOR,
     };
 
@@ -73,6 +73,46 @@ mod stake {
     }
 
     #[test]
+    fn test_stake_after_slashing() {
+        let owner = "owner".into_bech32();
+        let (mut app, contract_addr, validator_addr) =
+            instantiate_staker_with_min_deposit_and_initial_stake(
+                owner.clone(),
+                "treasury".into_bech32(),
+                0,
+                0,
+            );
+
+        // mint INJ tokens to the 'anyone' user
+        let anyone: Addr = "anyone".into_bech32();
+        let inj_to_mint = 100000000000;
+        mint_inj(&mut app, &anyone, inj_to_mint * 2);
+
+        // whitelist user
+        whitelist_user(&mut app, &contract_addr, &owner, &anyone);
+
+        // execute stake
+        stake(&mut app, &anyone, &contract_addr, inj_to_mint).unwrap();
+
+        // Slash the validator by 50%
+        app.sudo(cw_multi_test::SudoMsg::Staking(StakingSudo::Slash {
+            validator: validator_addr.to_string(),
+            percentage: Decimal::percent(50),
+        }))
+        .unwrap();
+
+        stake(&mut app, &anyone, &contract_addr, inj_to_mint).unwrap();
+
+        // user will have been minted double the truinj due to the share price being cut in half
+        let sender_balance = query_truinj_balance(&app, &anyone, &contract_addr);
+        assert_eq!(sender_balance, inj_to_mint * 3);
+
+        // total staked increased by the staked amount but half of the original stake was slashed
+        let total_staked = get_total_staked(&app, &contract_addr);
+        assert_eq!(total_staked.u128(), inj_to_mint / 2 + inj_to_mint);
+    }
+
+    #[test]
     fn test_stake_to_specific_validator() {
         let owner = "owner".into_bech32();
         let (mut app, contract_addr, _) = instantiate_staker_with_min_deposit_and_initial_stake(
@@ -83,7 +123,6 @@ mod stake {
         );
 
         let second_validator: Addr = "second_validator".into_bech32();
-        add_validator_to_app(&mut app, second_validator.to_string());
         add_validator(
             &mut app,
             owner.clone(),
@@ -143,19 +182,9 @@ mod stake {
 
     #[test]
     fn test_stake_twice() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
-        let msg = InstantiateMsg {
-            treasury: "treasury".into_bech32(),
-            default_validator: validator_addr,
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner.clone(), &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (mut app, contract_addr, _) =
+            instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         let anyone: Addr = "anyone".into_bech32();
 
@@ -266,19 +295,8 @@ mod stake {
 
     #[test]
     fn test_stake_with_non_whitelisted_user_fails() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
-        let msg = InstantiateMsg {
-            treasury: "treasury".into_bech32(),
-            default_validator: validator_addr,
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner, &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (mut app, contract_addr, _) = instantiate_staker(owner, "treasury".into_bech32());
 
         let anyone: Addr = "anyone".into_bech32();
 
@@ -301,19 +319,9 @@ mod stake {
 
     #[test]
     fn test_stake_to_specific_validator_with_non_whitelisted_user_fails() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
-        let msg = InstantiateMsg {
-            treasury: "treasury".into_bech32(),
-            default_validator: validator_addr.clone(),
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner, &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (mut app, contract_addr, validator_addr) =
+            instantiate_staker(owner, "treasury".into_bech32());
 
         let anyone: Addr = "anyone".into_bech32();
 
@@ -342,19 +350,9 @@ mod stake {
 
     #[test]
     fn test_stake_to_disabled_pool_fails() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
-        let msg = InstantiateMsg {
-            treasury: "treasury".into_bech32(),
-            default_validator: validator_addr.clone(),
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner.clone(), &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (mut app, contract_addr, validator_addr) =
+            instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         // disable validator
         disable_validator(&mut app, owner.clone(), &contract_addr, validator_addr).unwrap();
@@ -375,19 +373,9 @@ mod stake {
 
     #[test]
     fn test_stake_to_nonexistent_pool_fails() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
-        let msg = InstantiateMsg {
-            treasury: "treasury".into_bech32(),
-            default_validator: validator_addr,
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner.clone(), &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (mut app, contract_addr, _) =
+            instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         let anyone: Addr = "anyone".into_bech32();
 
@@ -455,30 +443,20 @@ mod stake {
             .query_wasm_smart(contract_addr.clone(), &QueryMsg::GetTotalAssets {})
             .unwrap();
 
-        assert!(post_total_assets.total_assets.is_zero());
+        assert_eq!(post_total_assets.total_assets, Uint128::one());
 
         let post_total_staked = get_total_staked(&app, &contract_addr);
         assert!(
-            post_total_staked
+            post_total_staked + post_total_assets.total_assets
                 == pre_total_staked + Uint128::from(inj_to_mint) + total_assets.total_assets
         );
     }
 
     #[test]
     fn test_stake_when_contract_paused_fails() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
-        let msg = InstantiateMsg {
-            treasury: "treasury".into_bech32(),
-            default_validator: validator_addr,
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner.clone(), &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (mut app, contract_addr, _) =
+            instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         // pause contract
         pause(&mut app, &contract_addr, &owner);
@@ -499,19 +477,9 @@ mod stake {
 
     #[test]
     fn test_stake_to_specific_validator_when_contract_paused_fails() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
-        let msg = InstantiateMsg {
-            treasury: "treasury".into_bech32(),
-            default_validator: validator_addr,
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner.clone(), &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (mut app, contract_addr, _) =
+            instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         // pause contract
         pause(&mut app, &contract_addr, &owner);
@@ -533,19 +501,9 @@ mod stake {
 
     #[test]
     fn test_stake_below_min_deposit_fails() {
-        let (mut app, validator_addr) = mock_app_with_validator();
-        let code_id = app.store_code(contract_wrapper());
-
-        // instantiate the contract
         let owner = "owner".into_bech32();
-        let msg = InstantiateMsg {
-            treasury: "treasury".into_bech32(),
-            default_validator: validator_addr,
-        };
-
-        let contract_addr = app
-            .instantiate_contract(code_id, owner.clone(), &msg, &[], "staker-contract", None)
-            .unwrap();
+        let (mut app, contract_addr, _) =
+            instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         let anyone: Addr = "anyone".into_bech32();
 

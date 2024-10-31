@@ -1,11 +1,12 @@
 use crate::state::{Allocation, UserStatus, ValidatorInfo};
 use cosmwasm_schema::{cw_serde, QueryResponses};
-use cosmwasm_std::{Addr, Binary, Uint128, Uint256};
+use cosmwasm_std::{Binary, Uint128, Uint256};
 
 #[cw_serde]
 pub struct InstantiateMsg {
-    pub treasury: Addr,
-    pub default_validator: Addr,
+    pub owner: String,
+    pub treasury: String,
+    pub default_validator: String,
 }
 
 #[cw_serde]
@@ -20,10 +21,10 @@ pub enum ExecuteMsg {
         new_min_deposit: Uint128,
     },
     SetTreasury {
-        new_treasury_addr: Addr,
+        new_treasury_addr: String,
     },
     SetDefaultValidator {
-        new_default_validator_addr: Addr,
+        new_default_validator_addr: String,
     },
     /// Transfer is a base message to move tokens to another account without triggering actions
     Transfer {
@@ -39,70 +40,82 @@ pub enum ExecuteMsg {
     },
     Stake {},
     StakeToSpecificValidator {
-        validator_addr: Addr,
+        validator_addr: String,
     },
     Unstake {
         amount: Uint128,
     },
     UnstakeFromSpecificValidator {
-        validator_addr: Addr,
+        validator_addr: String,
         amount: Uint128,
     },
     Claim {},
     AddValidator {
-        validator: Addr,
+        validator: String,
     },
     EnableValidator {
-        validator: Addr,
+        validator: String,
     },
     DisableValidator {
-        validator: Addr,
+        validator: String,
     },
     // Whitelist messages
     AddAgent {
-        agent: Addr,
+        agent: String,
     },
     RemoveAgent {
-        agent: Addr,
+        agent: String,
     },
     SetPendingOwner {
-        new_owner: Addr,
+        new_owner: String,
     },
     ClaimOwnership {},
     AddUserToWhitelist {
-        user: Addr,
+        user: String,
     },
     AddUserToBlacklist {
-        user: Addr,
+        user: String,
     },
     ClearUserStatus {
-        user: Addr,
+        user: String,
     },
     Pause,
     Unpause,
     CompoundRewards,
     Allocate {
-        recipient: Addr,
+        recipient: String,
         amount: Uint128,
     },
     Deallocate {
-        recipient: Addr,
+        recipient: String,
         amount: Uint128,
     },
     DistributeRewards {
-        recipient: Addr,
+        recipient: String,
+        in_inj: bool,
+    },
+    DistributeAll {
         in_inj: bool,
     },
     // Internal messages
     Restake {
         amount: Uint128,
-        validator_addr: Addr,
+        validator_addr: String,
     },
     // Test messages
     #[cfg(any(test, feature = "test"))]
     TestAllocate {
-        recipient: Addr,
+        recipient: String,
         amount: Uint128,
+    },
+    #[cfg(any(test, feature = "test"))]
+    TestMint {
+        recipient: cosmwasm_std::Addr,
+        amount: Uint128,
+    },
+    #[cfg(any(test, feature = "test"))]
+    TestSetMinimumDeposit {
+        new_min_deposit: Uint128,
     },
 }
 
@@ -118,7 +131,7 @@ pub enum QueryMsg {
     #[returns(cw20::MarketingInfoResponse)]
     MarketingInfo {},
     #[returns(GetIsOwnerResponse)]
-    IsOwner { addr: Addr },
+    IsOwner { addr: String },
     #[returns(GetValidatorResponse)]
     GetValidators {},
     #[returns(GetTotalStakedResponse)]
@@ -128,41 +141,41 @@ pub enum QueryMsg {
     #[returns(GetTotalSupplyResponse)]
     GetTotalSupply {},
     #[returns(GetClaimableAmountResponse)]
-    GetClaimableAmount { user: Addr },
+    GetClaimableAmount { user: String },
 
     // Whitelist queries
     #[returns(GetIsAgentResponse)]
-    IsAgent { agent: Addr },
+    IsAgent { agent: String },
     #[returns(GetIsWhitelistedResponse)]
-    IsWhitelisted { user: Addr },
+    IsWhitelisted { user: String },
     #[returns(GetIsBlacklistedResponse)]
-    IsBlacklisted { user: Addr },
+    IsBlacklisted { user: String },
     #[returns(GetCurrentUserStatusResponse)]
-    GetCurrentUserStatus { user: Addr },
+    GetCurrentUserStatus { user: String },
     #[returns(GetSharePriceResponse)]
     GetSharePrice {},
     #[returns(GetTotalAssetsResponse)]
     GetTotalAssets {},
     #[returns(cw_controllers::ClaimsResponse)]
-    GetClaimableAssets { user: Addr },
+    GetClaimableAssets { user: String },
     #[returns(GetMaxWithdrawResponse)]
-    GetMaxWithdraw { user: Addr },
+    GetMaxWithdraw { user: String },
     #[returns(GetAllocationsResponse)]
-    GetAllocations { user: Addr },
+    GetAllocations { user: String },
     #[returns(GetTotalAllocatedResponse)]
-    GetTotalAllocated { user: Addr },
+    GetTotalAllocated { user: String },
     #[returns(GetDistributionAmountsResponse)]
     GetDistributionAmounts {
-        distributor: Addr,
-        recipient: Option<Addr>,
+        distributor: String,
+        recipient: Option<String>,
     },
 }
 
 #[cw_serde]
 pub struct GetStakerInfoResponse {
-    pub owner: Addr,
-    pub default_validator: Addr,
-    pub treasury: Addr,
+    pub owner: String,
+    pub default_validator: String,
+    pub treasury: String,
     pub fee: u16,
     pub distribution_fee: u16,
     pub min_deposit: Uint128,

@@ -1,8 +1,8 @@
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
-    ensure, to_json_binary, Addr, Binary, Coin, Deps, DepsMut, Env, Event, MessageInfo, Response,
-    StakingMsg, StdResult, Uint128, Uint256, Uint512,
+    ensure, to_json_binary, Addr, BankMsg, Binary, Coin, Deps, DepsMut, Env, Event, MessageInfo,
+    Response, StakingMsg, StdResult, Uint128, Uint256, Uint512,
 };
 use cw2::set_contract_version;
 use cw20::{LogoInfo, MarketingInfoResponse};
@@ -19,15 +19,16 @@ use crate::msg::{
     InstantiateMsg, QueryMsg,
 };
 use crate::state::{
-    allocations, Allocation, DistributionInfo, StakerInfo, Validator, ValidatorState, CLAIMS,
+    allocations, Allocation, DistributionInfo, GetValueTrait, StakerInfo, ValidatorState, CLAIMS,
     CONTRACT_REWARDS, DEFAULT_VALIDATOR, IS_PAUSED, OWNER, STAKER_INFO, VALIDATORS,
 };
 use crate::{whitelist, FEE_PRECISION, INJ, ONE_INJ, SHARE_PRICE_SCALING_FACTOR, UNBONDING_PERIOD};
 
-// version info for migration info
+// version info for contract migrations
 const CONTRACT_NAME: &str = "crates.io:injective-staker";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Entry point to instantiate the contract.
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn instantiate(
     deps: DepsMut,
@@ -35,9 +36,19 @@ pub fn instantiate(
     info: MessageInfo,
     msg: InstantiateMsg,
 ) -> Result<Response, ContractError> {
-    let owner_addr = info.sender;
-    let treasury_addr = deps.api.addr_validate(msg.treasury.as_str()).unwrap();
+    // validate all user addresses
+    let owner_addr = deps.api.addr_validate(&msg.owner)?;
+    let treasury_addr = deps.api.addr_validate(&msg.treasury)?;
+
+    // check the given validator exists
     let default_validator_addr = msg.default_validator;
+    let vals = deps.querier.query_all_validators()?;
+    if !vals.iter().any(|v| v.address == default_validator_addr) {
+        return Err(ContractError::NotInValidatorSet);
+    }
+
+    // ensure we pay a reserve amount into the staker to make up for rounding errors i.e. when unbonding.
+    cw_utils::must_pay(&info, INJ)?;
 
     let staker_info = StakerInfo {
         treasury: treasury_addr,
@@ -82,9 +93,7 @@ pub fn instantiate(
     VALIDATORS.save(
         deps.storage,
         &default_validator_addr,
-        &Validator {
-            state: ValidatorState::ENABLED,
-        },
+        &ValidatorState::Enabled,
     )?;
 
     Ok(Response::new().add_event(
@@ -96,6 +105,7 @@ pub fn instantiate(
     ))
 }
 
+/// Entry point to execute contract operations.
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn execute(
     deps: DepsMut,
@@ -112,11 +122,11 @@ pub fn execute(
             set_min_deposit(deps, info.sender, new_min_deposit)
         }
         ExecuteMsg::SetTreasury { new_treasury_addr } => {
-            execute::set_treasury(deps, info.sender, new_treasury_addr)
+            execute::set_treasury(deps, info.sender, &new_treasury_addr)
         }
         ExecuteMsg::SetDefaultValidator {
             new_default_validator_addr,
-        } => execute::set_default_validator(deps, info.sender, new_default_validator_addr),
+        } => execute::set_default_validator(deps, info.sender, &new_default_validator_addr),
         ExecuteMsg::Transfer { recipient, amount } => {
             Ok(execute_transfer(deps, env, info, recipient, amount)?)
         }
@@ -136,9 +146,9 @@ pub fn execute(
         } => {
             execute::unstake_from_specific_validator(deps, env, info, validator_addr, amount.u128())
         }
-        ExecuteMsg::Claim {} => execute::claim(deps, env, info),
+        ExecuteMsg::Claim {} => execute::claim(deps, env, info.sender),
         ExecuteMsg::SetPendingOwner { new_owner } => {
-            execute::set_pending_owner(deps, info.sender, new_owner)
+            execute::set_pending_owner(deps, info.sender, &new_owner)
         }
         ExecuteMsg::ClaimOwnership {} => execute::claim_ownership(deps, info.sender),
         ExecuteMsg::AddValidator { validator } => {
@@ -153,16 +163,16 @@ pub fn execute(
         ExecuteMsg::Pause => execute::pause(deps, info.sender),
         ExecuteMsg::Unpause => execute::unpause(deps, info.sender),
 
-        ExecuteMsg::AddAgent { agent } => whitelist::add_agent(deps, info.sender, agent),
-        ExecuteMsg::RemoveAgent { agent } => whitelist::remove_agent(deps, info.sender, agent),
+        ExecuteMsg::AddAgent { agent } => whitelist::add_agent(deps, info.sender, &agent),
+        ExecuteMsg::RemoveAgent { agent } => whitelist::remove_agent(deps, info.sender, &agent),
         ExecuteMsg::AddUserToWhitelist { user } => {
-            whitelist::add_user_to_whitelist(deps, info.sender, user)
+            whitelist::add_user_to_whitelist(deps, info.sender, &user)
         }
         ExecuteMsg::AddUserToBlacklist { user } => {
-            whitelist::add_user_to_blacklist(deps, info.sender, user)
+            whitelist::add_user_to_blacklist(deps, info.sender, &user)
         }
         ExecuteMsg::ClearUserStatus { user } => {
-            whitelist::clear_user_status(deps, info.sender, user)
+            whitelist::clear_user_status(deps, info.sender, &user)
         }
         ExecuteMsg::CompoundRewards => execute::compound_rewards(deps, env),
         ExecuteMsg::Restake {
@@ -170,24 +180,34 @@ pub fn execute(
             validator_addr,
         } => execute::_restake(deps, env, info.sender, amount, validator_addr),
         ExecuteMsg::Allocate { recipient, amount } => {
-            execute::allocate(deps, env, info.sender, recipient, amount)
+            execute::allocate(deps, env, info.sender, &recipient, amount)
         }
         ExecuteMsg::Deallocate { recipient, amount } => {
-            execute::deallocate(deps, info.sender, recipient, amount)
+            execute::deallocate(deps, info.sender, &recipient, amount)
         }
         ExecuteMsg::DistributeRewards { recipient, in_inj } => {
-            execute::distribute_rewards(deps, env, info, recipient, in_inj)
+            execute::distribute_rewards(deps, env, info, &recipient, in_inj)
         }
+        ExecuteMsg::DistributeAll { in_inj } => execute::distribute_all(deps, env, info, in_inj),
         #[cfg(any(test, feature = "test"))]
         ExecuteMsg::TestAllocate { recipient, amount } => {
-            test_allocate(deps, env, info.sender, recipient, amount)
+            test_allocate(deps, env, info.sender, &recipient, amount)
+        }
+        #[cfg(any(test, feature = "test"))]
+        ExecuteMsg::TestMint { recipient, amount } => {
+            let contract_addr = env.contract.address.clone();
+            test_mint(deps, env, contract_addr, recipient, amount)
+        }
+        #[cfg(any(test, feature = "test"))]
+        ExecuteMsg::TestSetMinimumDeposit { new_min_deposit } => {
+            test_set_min_deposit(deps, new_min_deposit)
         }
     }
 }
 
 pub mod execute {
     use cosmwasm_std::{BankMsg, DistributionMsg, WasmMsg};
-    use query::{get_share_price, get_total_allocated};
+    use query::{get_allocations, get_share_price, get_total_allocated};
 
     use super::*;
 
@@ -195,8 +215,9 @@ pub mod execute {
 
     use crate::state::{Allocation, IS_PAUSED, PENDING_OWNER};
 
+    /// Sets the treasury fee charged on rewards.
     pub fn set_fee(deps: DepsMut, sender: Addr, new_fee: u16) -> Result<Response, ContractError> {
-        check_owner(deps.as_ref(), sender)?;
+        check_owner(deps.as_ref(), &sender)?;
 
         ensure!(new_fee < FEE_PRECISION, ContractError::FeeTooLarge);
 
@@ -214,12 +235,13 @@ pub mod execute {
         ))
     }
 
+    /// Sets the treasury fee charged on rewards distribution.
     pub fn set_distribution_fee(
         deps: DepsMut,
         sender: Addr,
         new_distribution_fee: u16,
     ) -> Result<Response, ContractError> {
-        check_owner(deps.as_ref(), sender)?;
+        check_owner(deps.as_ref(), &sender)?;
 
         ensure!(
             new_distribution_fee < FEE_PRECISION,
@@ -240,14 +262,18 @@ pub mod execute {
         ))
     }
 
+    /// Sets the minimum INJ amount a user can deposit.
     pub fn set_min_deposit(
         deps: DepsMut,
         sender: Addr,
         new_min_deposit: Uint128,
     ) -> Result<Response, ContractError> {
-        check_owner(deps.as_ref(), sender)?;
+        check_owner(deps.as_ref(), &sender)?;
 
-        // ensure!(new_min_deposit.u128() >= ONE_INJ, ContractError::MinimumDepositTooSmall);
+        ensure!(
+            new_min_deposit.u128() >= ONE_INJ,
+            ContractError::MinimumDepositTooSmall
+        );
 
         let old_min_deposit = STAKER_INFO.load(deps.storage)?.min_deposit;
 
@@ -263,58 +289,54 @@ pub mod execute {
         ))
     }
 
+    /// Sets the treasury address.
     pub fn set_treasury(
         deps: DepsMut,
         sender: Addr,
-        new_treasury_addr: Addr,
+        new_treasury: &String,
     ) -> Result<Response, ContractError> {
-        check_owner(deps.as_ref(), sender)?;
+        check_owner(deps.as_ref(), &sender)?;
 
-        let validated_addr = deps.api.addr_validate(new_treasury_addr.as_str()).unwrap();
+        let treasury_addr = deps.api.addr_validate(new_treasury)?;
 
         let old_treasury_addr = STAKER_INFO.load(deps.storage)?.treasury;
 
         STAKER_INFO.update(deps.storage, |mut state| -> Result<_, ContractError> {
-            state.treasury = validated_addr.clone();
+            state.treasury = treasury_addr;
             Ok(state)
         })?;
 
         Ok(Response::new().add_event(
             Event::new("set_treasury")
-                .add_attribute("new_treasury_addr", validated_addr.to_string())
-                .add_attribute("old_treasury_addr", old_treasury_addr.to_string()),
+                .add_attribute("new_treasury_addr", new_treasury)
+                .add_attribute("old_treasury_addr", old_treasury_addr),
         ))
     }
 
+    /// Sets a given validator as the new default validator.
     pub fn set_default_validator(
         deps: DepsMut,
         sender: Addr,
-        new_default_validator_addr: Addr,
+        new_default_validator_addr: &String,
     ) -> Result<Response, ContractError> {
-        check_owner(deps.as_ref(), sender)?;
-        check_validator(deps.as_ref(), new_default_validator_addr.clone())?;
+        check_owner(deps.as_ref(), &sender)?;
+        check_validator(deps.as_ref(), new_default_validator_addr)?;
 
         let old_default_validator_addr = DEFAULT_VALIDATOR.load(deps.storage)?;
 
-        DEFAULT_VALIDATOR.save(deps.storage, &new_default_validator_addr)?;
+        DEFAULT_VALIDATOR.save(deps.storage, new_default_validator_addr)?;
 
         Ok(Response::new().add_event(
             Event::new("set_default_validator")
-                .add_attribute(
-                    "new_default_validator_addr",
-                    new_default_validator_addr.into_string(),
-                )
-                .add_attribute(
-                    "old_default_validator_addr",
-                    old_default_validator_addr.into_string(),
-                ),
+                .add_attribute("new_default_validator_addr", new_default_validator_addr)
+                .add_attribute("old_default_validator_addr", old_default_validator_addr),
         ))
     }
 
-    // Stakes INJ to the default validator.
+    /// Stakes INJ to the default validator.
     pub fn stake(deps: DepsMut, env: Env, info: MessageInfo) -> Result<Response, ContractError> {
         check_not_paused(deps.as_ref())?;
-        whitelist::check_whitelisted(deps.as_ref(), info.sender.clone())?;
+        whitelist::check_whitelisted(deps.as_ref(), &info.sender)?;
 
         let validator_addr = DEFAULT_VALIDATOR.load(deps.storage)?;
 
@@ -322,15 +344,15 @@ pub mod execute {
         Ok(stake_res)
     }
 
-    // Stakes INJ to the specified validator.
+    /// Stakes INJ to the specified validator.
     pub fn stake_to_specific_validator(
         deps: DepsMut,
         env: Env,
         info: MessageInfo,
-        validator_addr: Addr,
+        validator_addr: String,
     ) -> Result<Response, ContractError> {
         check_not_paused(deps.as_ref())?;
-        whitelist::check_whitelisted(deps.as_ref(), info.sender.clone())?;
+        whitelist::check_whitelisted(deps.as_ref(), &info.sender)?;
 
         let stake_res = internal_stake(deps, env, info, validator_addr)?;
         Ok(stake_res)
@@ -344,23 +366,23 @@ pub mod execute {
         amount: u128,
     ) -> Result<Response, ContractError> {
         check_not_paused(deps.as_ref())?;
-        whitelist::check_whitelisted(deps.as_ref(), info.sender.clone())?;
+        whitelist::check_whitelisted(deps.as_ref(), &info.sender)?;
 
         let validator_addr = DEFAULT_VALIDATOR.load(deps.storage)?;
         let unstake_res = internal_unstake(deps, env, info, validator_addr, amount)?;
         Ok(unstake_res)
     }
 
-    /// Unstakes a certain amount of INJ from a specific validator.
+    /// Unstakes a certain amount of INJ from the specified validator.
     pub fn unstake_from_specific_validator(
         deps: DepsMut,
         env: Env,
         info: MessageInfo,
-        validator_addr: Addr,
+        validator_addr: String,
         amount: u128,
     ) -> Result<Response, ContractError> {
         check_not_paused(deps.as_ref())?;
-        whitelist::check_whitelisted(deps.as_ref(), info.sender.clone())?;
+        whitelist::check_whitelisted(deps.as_ref(), &info.sender)?;
 
         ensure!(
             VALIDATORS.has(deps.storage, &validator_addr),
@@ -375,12 +397,12 @@ pub mod execute {
     pub fn set_pending_owner(
         deps: DepsMut,
         sender: Addr,
-        new_owner: Addr,
+        new_owner: &String,
     ) -> Result<Response, ContractError> {
-        check_owner(deps.as_ref(), sender.clone())?;
-        let new_owner = deps.api.addr_validate(new_owner.as_str()).unwrap();
+        check_owner(deps.as_ref(), &sender)?;
+        let new_owner_addr = deps.api.addr_validate(new_owner)?;
 
-        PENDING_OWNER.save(deps.storage, &new_owner)?;
+        PENDING_OWNER.save(deps.storage, &new_owner_addr)?;
 
         Ok(Response::new().add_event(
             Event::new("set_pending_owner")
@@ -389,45 +411,47 @@ pub mod execute {
         ))
     }
 
+    /// Allocates INJ staking rewards to the recipient.
     pub fn allocate(
         deps: DepsMut,
         env: Env,
         sender: Addr,
-        recipient: Addr,
+        recipient: &String,
         amount: Uint128,
     ) -> Result<Response, ContractError> {
         check_not_paused(deps.as_ref())?;
-        whitelist::check_whitelisted(deps.as_ref(), sender.clone())?;
-        deps.api.addr_validate(recipient.as_str())?;
+        whitelist::check_whitelisted(deps.as_ref(), &sender)?;
+        let recipient_addr = deps.api.addr_validate(recipient)?;
 
-        ensure!(recipient != sender, ContractError::InvalidRecipient {});
+        ensure!(recipient_addr != sender, ContractError::InvalidRecipient {});
         ensure!(
             amount.u128() >= ONE_INJ,
             ContractError::AllocationUnderOneInj {}
         );
-        let share_price_response = get_share_price(deps.as_ref(), env.contract.address);
+        let share_price_response = get_share_price(deps.as_ref(), &env.contract.address);
         let recipient_allocation = allocations().update(
             deps.storage,
-            (sender.clone(), recipient.clone()),
+            (sender.clone(), recipient_addr.clone()),
             |existing| -> Result<_, ContractError> {
                 existing.map_or_else(
+                    // if the user has no allocations to the recipient, create a new one
                     || {
                         Ok(Allocation {
                             allocator: sender.clone(),
-                            recipient: recipient.clone(),
+                            recipient: recipient_addr.clone(),
                             inj_amount: amount,
                             share_price_num: share_price_response.numerator,
                             share_price_denom: share_price_response.denominator,
                         })
                     },
                     |allocation| {
+                        // if the user has an allocation to the recipient, update it to reflect the new amount and share price
                         let updated_allocation = calculate_updated_allocation(
                             &allocation,
                             amount,
                             share_price_response.numerator,
                             share_price_response.denominator,
-                        )
-                        .unwrap();
+                        )?;
                         Ok(updated_allocation)
                     },
                 )
@@ -459,17 +483,20 @@ pub mod execute {
         ))
     }
 
+    /// Deallocates INJ staking rewards from the recipient.
     pub fn deallocate(
         deps: DepsMut,
         sender: Addr,
-        recipient: Addr,
+        recipient: &String,
         amount: Uint128,
     ) -> Result<Response, ContractError> {
         check_not_paused(deps.as_ref())?;
-        whitelist::check_whitelisted(deps.as_ref(), sender.clone())?;
+        whitelist::check_whitelisted(deps.as_ref(), &sender)?;
+
+        let recipient_addr = deps.api.addr_validate(recipient)?;
 
         let mut allocation = allocations()
-            .load(deps.storage, (sender.clone(), recipient.clone()))
+            .load(deps.storage, (sender.clone(), recipient_addr.clone()))
             .map_err(|_| ContractError::NoAllocationToRecipient)?;
 
         ensure!(
@@ -481,7 +508,7 @@ pub mod execute {
         if remaining_amount.is_zero() {
             allocations().replace(
                 deps.storage,
-                (sender.clone(), recipient.clone()),
+                (sender.clone(), recipient_addr),
                 None,
                 Some(&allocation),
             )?;
@@ -490,11 +517,13 @@ pub mod execute {
                 remaining_amount.u128() >= ONE_INJ,
                 ContractError::AllocationUnderOneInj {}
             );
+
+            #[allow(clippy::redundant_clone)]
             let old_allocation = allocation.clone();
             allocation.inj_amount = remaining_amount;
             allocations().replace(
                 deps.storage,
-                (sender.clone(), recipient.clone()),
+                (sender.clone(), recipient_addr),
                 Some(&allocation),
                 Some(&old_allocation),
             )?;
@@ -530,12 +559,14 @@ pub mod execute {
         mut deps: DepsMut,
         env: Env,
         info: MessageInfo,
-        recipient: Addr,
+        recipient: &str,
         in_inj: bool,
     ) -> Result<Response, ContractError> {
         check_not_paused(deps.as_ref())?;
         let distributor = info.sender.clone();
-        whitelist::check_whitelisted(deps.as_ref(), distributor.clone())?;
+        whitelist::check_whitelisted(deps.as_ref(), &distributor)?;
+
+        let recipient_addr = deps.api.addr_validate(recipient)?;
 
         ensure!(
             !allocations()
@@ -544,30 +575,25 @@ pub mod execute {
             ContractError::NoAllocations
         );
 
-        ensure!(
-            allocations().has(deps.storage, (distributor.clone(), recipient.clone())),
-            ContractError::NoAllocationToRecipient
-        );
-
-        let attached_inj_amount = cw_utils::may_pay(&info, INJ)?.u128();
-
         // get the allocation to the recipient
-        let allocation =
-            allocations().load(deps.storage, (distributor.clone(), recipient.clone()))?;
+        let allocation = allocations()
+            .load(deps.storage, (distributor.clone(), recipient_addr))
+            .map_err(|_| ContractError::NoAllocationToRecipient)?;
 
         // distribute rewards for the current share price
         let contract_addr = env.contract.address.clone();
-        let share_price = get_share_price(deps.as_ref(), contract_addr);
+        let share_price = get_share_price(deps.as_ref(), &contract_addr);
+        let staker_info = STAKER_INFO.load(deps.storage)?;
+        let attached_inj_amount = cw_utils::may_pay(&info, INJ)?.u128();
+
         let distribution_info = match internal_distribute(
             deps.branch(),
             env,
-            &distributor,
-            &recipient,
             allocation,
             in_inj,
-            share_price.numerator,
-            share_price.denominator,
+            &share_price,
             attached_inj_amount,
+            &staker_info,
         )? {
             Some(info) => info,
             // return if there are no rewards to distribute
@@ -587,32 +613,12 @@ pub mod execute {
             }
         };
 
-        // update the share price of the allocation
-        allocations().update(
-            deps.storage,
-            (distributor.clone(), recipient),
-            |existing| -> Result<_, ContractError> {
-                let mut updated_alloc = existing.unwrap();
-                updated_alloc.share_price_num = share_price.numerator;
-                updated_alloc.share_price_denom = share_price.denominator;
-                Ok(updated_alloc)
-            },
-        )?;
-
-        let total_allocated = get_total_allocated(deps.as_ref(), distributor.clone())?;
-
         // prepare the response
         let mut response: Response = Response::new();
 
-        // if the distribution is in INJ, transfer the amount to the recipient
-        if distribution_info.in_inj {
-            response = response.add_message(BankMsg::Send {
-                to_address: distribution_info.recipient.to_string(),
-                amount: vec![Coin {
-                    denom: INJ.to_string(),
-                    amount: distribution_info.inj_amount.into(),
-                }],
-            });
+        // add the INJ transfer to the response if there is one
+        if let Some(inj_transfer) = distribution_info.inj_transfer {
+            response = response.add_message(inj_transfer);
         }
 
         // if there is a refund, tranfer the amount to the distributor
@@ -626,25 +632,10 @@ pub mod execute {
             });
         }
 
+        let total_allocated = get_total_allocated(deps.as_ref(), distributor)?;
         Ok(response.add_event(
-            Event::new("distributed-rewards")
-                .add_attribute("user", distribution_info.user)
-                .add_attribute("recipient", distribution_info.recipient)
-                .add_attribute("user_balance", distribution_info.user_balance.to_string())
-                .add_attribute(
-                    "recipient_balance",
-                    distribution_info.recipient_balance.to_string(),
-                )
-                .add_attribute(
-                    "treasury_balance",
-                    distribution_info.treasury_balance.to_string(),
-                )
-                .add_attribute("fees", distribution_info.fees.to_string())
-                .add_attribute("shares", distribution_info.shares.to_string())
-                .add_attribute("inj_amount", distribution_info.inj_amount.to_string())
-                .add_attribute("in_inj", distribution_info.in_inj.to_string())
-                .add_attribute("share_price_num", distribution_info.share_price_num)
-                .add_attribute("share_price_denom", distribution_info.share_price_denom)
+            distribution_info
+                .distribution_event
                 .add_attribute(
                     "total_allocated_amount",
                     total_allocated.total_allocated_amount,
@@ -660,36 +651,111 @@ pub mod execute {
         ))
     }
 
-    // Allows a user to withdraw all their expired claims.
-    pub fn claim(deps: DepsMut, env: Env, info: MessageInfo) -> Result<Response, ContractError> {
+    /// Distributes staking rewards to all recipients in INJ or TruINJ.
+    pub fn distribute_all(
+        mut deps: DepsMut,
+        env: Env,
+        info: MessageInfo,
+        in_inj: bool,
+    ) -> Result<Response, ContractError> {
         check_not_paused(deps.as_ref())?;
-        whitelist::check_whitelisted(deps.as_ref(), info.sender.clone())?;
+        let distributor = info.sender.clone();
+        whitelist::check_whitelisted(deps.as_ref(), &distributor)?;
 
-        let contract_addr = env.contract.address.clone();
-        let contract_rewards = CONTRACT_REWARDS.load(deps.storage)?;
-        let total_assets = deps
-            .querier
-            .query_balance(contract_addr, INJ)
-            .unwrap()
-            .amount;
-        let contract_claimed_amount = total_assets.saturating_sub(contract_rewards);
-
-        let claimed_amount = CLAIMS.claim_tokens(
-            deps.storage,
-            &info.sender,
-            &env.block,
-            Some(contract_claimed_amount),
-        )?;
-
+        let allocations = get_allocations(deps.as_ref(), distributor.clone())?;
         ensure!(
-            claimed_amount > Uint128::zero(),
-            ContractError::NothingToClaim {}
+            !allocations.allocations.is_empty(),
+            ContractError::NoAllocations
         );
 
-        // transfer tokens to the sender
-        let res = Response::new()
+        let share_price = get_share_price(deps.as_ref(), &env.contract.address);
+        let mut inj_available = cw_utils::may_pay(&info, INJ)?.u128();
+        let staker_info = STAKER_INFO.load(deps.storage)?;
+
+        let mut events = Vec::new();
+        let mut response = Response::new();
+
+        // process all user allocations
+        for allocation in allocations.allocations {
+            if let Some(distribution_info) = internal_distribute(
+                deps.branch(),
+                env.clone(),
+                allocation,
+                in_inj,
+                &share_price,
+                inj_available,
+                &staker_info,
+            )? {
+                if let Some(inj_transfer) = distribution_info.inj_transfer {
+                    response = response.add_message(inj_transfer);
+                }
+                events.push(distribution_info.distribution_event);
+                inj_available = distribution_info.refund_amount;
+            }
+        }
+
+        // refund INJ to the distributor
+        if inj_available > 0 {
+            response = response.add_message(BankMsg::Send {
+                to_address: distributor.to_string(),
+                amount: vec![Coin {
+                    denom: INJ.to_string(),
+                    amount: inj_available.into(),
+                }],
+            });
+        }
+
+        let total_allocated = get_total_allocated(deps.as_ref(), distributor.clone())?;
+        for event in events {
+            response = response.add_event(
+                event
+                    .add_attribute(
+                        "total_allocated_amount",
+                        total_allocated.total_allocated_amount,
+                    )
+                    .add_attribute(
+                        "total_allocated_share_price_num",
+                        total_allocated.total_allocated_share_price_num,
+                    )
+                    .add_attribute(
+                        "total_allocated_share_price_denom",
+                        total_allocated.total_allocated_share_price_denom,
+                    ),
+            );
+        }
+
+        Ok(response.add_event(Event::new("distributed_all").add_attribute("user", distributor)))
+    }
+
+    /// Allows a user to withdraw all their expired claims.
+    pub fn claim(deps: DepsMut, env: Env, user: Addr) -> Result<Response, ContractError> {
+        check_not_paused(deps.as_ref())?;
+        whitelist::check_whitelisted(deps.as_ref(), &user)?;
+
+        // check if the user has a pending claim
+        let claimed_amount = CLAIMS.claim_tokens(deps.storage, &user, &env.block, None)?;
+        ensure!(
+            claimed_amount > Uint128::zero(),
+            ContractError::NothingToClaim
+        );
+
+        // check if the contract has enough assets to fulfill the claim
+        let contract_balance = deps
+            .querier
+            .query_balance(&env.contract.address, INJ)?
+            .amount;
+        let contract_rewards = CONTRACT_REWARDS.load(deps.storage)?;
+        let available_assets = contract_balance.saturating_sub(contract_rewards);
+
+        ensure!(
+            available_assets >= claimed_amount,
+            ContractError::InsufficientStakerFunds
+        );
+
+        // transfer the assets to the user
+        Ok(Response::new()
             .add_message(BankMsg::Send {
-                to_address: info.sender.to_string(),
+                to_address: user.to_string(),
                 amount: vec![Coin {
                     denom: INJ.to_string(),
                     amount: claimed_amount,
@@ -697,10 +763,9 @@ pub mod execute {
             })
             .add_event(
                 Event::new("claimed")
-                    .add_attribute("user", info.sender)
+                    .add_attribute("user", user)
                     .add_attribute("amount", claimed_amount),
-            );
-        Ok(res)
+            ))
     }
 
     /// Allows the pending owner to claim ownership of the contract.
@@ -726,90 +791,92 @@ pub mod execute {
         ))
     }
 
-    // Adds a new validator that can be staked to.
+    /// Adds a new validator that can be staked to.
     pub fn add_validator(
         deps: DepsMut,
         sender: Addr,
-        validator_addr: Addr,
+        validator_addr: String,
     ) -> Result<Response, ContractError> {
-        check_owner(deps.as_ref(), sender)?;
+        check_owner(deps.as_ref(), &sender)?;
         ensure!(
             !VALIDATORS.has(deps.storage, &validator_addr),
             ContractError::ValidatorAlreadyExists
         );
 
-        let validator = Validator {
-            state: ValidatorState::ENABLED,
-        };
+        // check the validator exists
+        let vals = deps.querier.query_all_validators()?;
+        if !vals.iter().any(|v| v.address == validator_addr) {
+            return Err(ContractError::NotInValidatorSet);
+        }
+
+        let validator = ValidatorState::Enabled;
+
         VALIDATORS.save(deps.storage, &validator_addr, &validator)?;
         Ok(Response::new().add_event(
-            Event::new("validator_added")
-                .add_attribute("validator_address", validator_addr.to_string()),
+            Event::new("validator_added").add_attribute("validator_address", validator_addr),
         ))
     }
 
-    // Enables a previously disabled validator.
+    /// Enables a previously disabled validator.
     pub fn enable_validator(
         deps: DepsMut,
         sender: Addr,
-        validator_addr: Addr,
+        validator_addr: String,
     ) -> Result<Response, ContractError> {
-        check_owner(deps.as_ref(), sender)?;
+        check_owner(deps.as_ref(), &sender)?;
         VALIDATORS.update(
             deps.storage,
             &validator_addr,
             |validator| -> Result<_, ContractError> {
-                let mut validator = validator.ok_or(ContractError::ValidatorDoesNotExist)?;
+                let mut validator_state = validator.ok_or(ContractError::ValidatorDoesNotExist)?;
 
                 ensure!(
-                    validator.state != ValidatorState::ENABLED,
+                    validator_state != ValidatorState::Enabled,
                     ContractError::ValidatorAlreadyEnabled
                 );
 
-                validator.state = ValidatorState::ENABLED;
-                Ok(validator)
+                validator_state = ValidatorState::Enabled;
+                Ok(validator_state)
             },
         )?;
 
         Ok(Response::new().add_event(
-            Event::new("validator_enabled")
-                .add_attribute("validator_address", validator_addr.to_string()),
+            Event::new("validator_enabled").add_attribute("validator_address", validator_addr),
         ))
     }
 
-    // Disables a previously enabled validator. Disabled validators cannot be staked to but stake already on the validator can be
+    /// Disables a previously enabled validator. Disabled validators cannot be staked to but stake already on the validator can be
     /// unstaked and withdrawn as normal.
     pub fn disable_validator(
         deps: DepsMut,
         sender: Addr,
-        validator_addr: Addr,
+        validator_addr: String,
     ) -> Result<Response, ContractError> {
-        check_owner(deps.as_ref(), sender)?;
+        check_owner(deps.as_ref(), &sender)?;
         VALIDATORS.update(
             deps.storage,
             &validator_addr,
             |validator| -> Result<_, ContractError> {
-                let mut validator = validator.ok_or(ContractError::ValidatorDoesNotExist)?;
+                let mut validator_state = validator.ok_or(ContractError::ValidatorDoesNotExist)?;
 
                 ensure!(
-                    validator.state != ValidatorState::DISABLED,
+                    validator_state != ValidatorState::Disabled,
                     ContractError::ValidatorAlreadyDisabled
                 );
 
-                validator.state = ValidatorState::DISABLED;
-                Ok(validator)
+                validator_state = ValidatorState::Disabled;
+                Ok(validator_state)
             },
         )?;
 
         Ok(Response::new().add_event(
-            Event::new("validator_disabled")
-                .add_attribute("validator_address", validator_addr.to_string()),
+            Event::new("validator_disabled").add_attribute("validator_address", validator_addr),
         ))
     }
 
     /// Pauses the contract to prevent user operations.
     pub fn pause(deps: DepsMut, sender: Addr) -> Result<Response, ContractError> {
-        check_owner(deps.as_ref(), sender)?;
+        check_owner(deps.as_ref(), &sender)?;
         check_not_paused(deps.as_ref())?;
 
         IS_PAUSED.save(deps.storage, &true)?;
@@ -819,7 +886,7 @@ pub mod execute {
 
     /// Unpauses the contract to allow user operations.
     pub fn unpause(deps: DepsMut, sender: Addr) -> Result<Response, ContractError> {
-        check_owner(deps.as_ref(), sender)?;
+        check_owner(deps.as_ref(), &sender)?;
 
         // set paused to false if the contract is paused
         IS_PAUSED.update(deps.storage, |paused| -> Result<_, ContractError> {
@@ -830,6 +897,7 @@ pub mod execute {
         Ok(Response::new().add_event(Event::new("unpaused")))
     }
 
+    /// Restakes rewards on all validators and sweeps contract rewards back into the default validator.
     pub fn compound_rewards(mut deps: DepsMut, env: Env) -> Result<Response, ContractError> {
         let contract_addr = env.contract.address.clone();
         let mut total_rewards = 0u128;
@@ -891,7 +959,7 @@ pub mod execute {
             );
 
             treasury_share_increase =
-                convert_to_shares((fees).into(), share_price_num, share_price_denom).unwrap();
+                convert_to_shares((fees).into(), share_price_num, share_price_denom)?;
 
             let minter_info = MessageInfo {
                 sender: contract_addr,
@@ -923,12 +991,13 @@ pub mod execute {
         Ok(res)
     }
 
+    /// Contract function to execute the restake operations. This function can only be called by the contract itself.
     pub fn _restake(
         deps: DepsMut,
         env: Env,
         sender: Addr,
         mut restake_amount: Uint128,
-        restake_validator: Addr,
+        restake_validator: String,
     ) -> Result<Response, ContractError> {
         ensure!(sender == env.contract.address, ContractError::Unauthorized);
 
@@ -941,7 +1010,7 @@ pub mod execute {
         }
 
         let res = Response::new().add_message(StakingMsg::Delegate {
-            validator: restake_validator.to_string(),
+            validator: restake_validator,
             amount: Coin {
                 denom: INJ.to_string(),
                 amount: restake_amount,
@@ -951,6 +1020,7 @@ pub mod execute {
     }
 }
 
+/// Entry point to query contract state.
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
@@ -966,44 +1036,60 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
         QueryMsg::GetTotalRewards {} => {
             to_json_binary(&query::get_total_rewards(deps, env.contract.address)?)
         }
-        QueryMsg::IsAgent { agent } => to_json_binary(&query::is_agent(deps, agent)?),
-        QueryMsg::IsOwner { addr } => to_json_binary(&query::is_owner(deps, addr)?),
-        QueryMsg::IsWhitelisted { user } => {
-            to_json_binary(&query::is_user_whitelisted(deps, user)?)
+        QueryMsg::IsAgent { agent } => {
+            to_json_binary(&query::is_agent(deps, deps.api.addr_validate(&agent)?)?)
         }
-        QueryMsg::IsBlacklisted { user } => {
-            to_json_binary(&query::is_user_blacklisted(deps, user)?)
+        QueryMsg::IsOwner { addr } => {
+            to_json_binary(&query::is_owner(deps, deps.api.addr_validate(&addr)?)?)
         }
-        QueryMsg::GetCurrentUserStatus { user } => {
-            to_json_binary(&query::get_current_user_status(deps, user)?)
-        }
+        QueryMsg::IsWhitelisted { user } => to_json_binary(&query::is_user_whitelisted(
+            deps,
+            deps.api.addr_validate(&user)?,
+        )?),
+        QueryMsg::IsBlacklisted { user } => to_json_binary(&query::is_user_blacklisted(
+            deps,
+            deps.api.addr_validate(&user)?,
+        )?),
+        QueryMsg::GetCurrentUserStatus { user } => to_json_binary(&query::get_current_user_status(
+            deps,
+            deps.api.addr_validate(&user)?,
+        )?),
         QueryMsg::GetSharePrice {} => {
-            to_json_binary(&query::get_share_price(deps, env.contract.address))
+            to_json_binary(&query::get_share_price(deps, &env.contract.address))
         }
         QueryMsg::GetTotalAssets {} => {
             to_json_binary(&query::get_total_assets(deps, env.contract.address)?)
         }
-        QueryMsg::GetClaimableAssets { user } => {
-            to_json_binary(&query::get_claimable_assets(deps, user)?)
-        }
-        QueryMsg::GetMaxWithdraw { user } => {
-            to_json_binary(&query::get_max_withdraw(deps, env.contract.address, user)?)
-        }
-        QueryMsg::GetClaimableAmount { user } => {
-            to_json_binary(&query::get_claimable_amount(deps, env, user)?)
-        }
-        QueryMsg::GetAllocations { user } => to_json_binary(&query::get_allocations(deps, user)?),
-        QueryMsg::GetTotalAllocated { user } => {
-            to_json_binary(&query::get_total_allocated(deps, user)?)
-        }
+        QueryMsg::GetClaimableAssets { user } => to_json_binary(&query::get_claimable_assets(
+            deps,
+            deps.api.addr_validate(&user)?,
+        )?),
+        QueryMsg::GetMaxWithdraw { user } => to_json_binary(&query::get_max_withdraw(
+            deps,
+            env.contract.address,
+            deps.api.addr_validate(&user)?,
+        )?),
+        QueryMsg::GetClaimableAmount { user } => to_json_binary(&query::get_claimable_amount(
+            deps,
+            env,
+            deps.api.addr_validate(&user)?,
+        )?),
+        QueryMsg::GetAllocations { user } => to_json_binary(&query::get_allocations(
+            deps,
+            deps.api.addr_validate(&user)?,
+        )?),
+        QueryMsg::GetTotalAllocated { user } => to_json_binary(&query::get_total_allocated(
+            deps,
+            deps.api.addr_validate(&user)?,
+        )?),
         QueryMsg::GetDistributionAmounts {
             distributor,
             recipient,
         } => to_json_binary(&query::get_distribution_amounts(
             deps,
             env.contract.address,
-            distributor,
-            recipient,
+            &distributor,
+            recipient.as_ref(),
         )?),
     }
 }
@@ -1026,12 +1112,13 @@ pub mod query {
     use crate::state::{Allocation, ValidatorInfo, VALIDATORS};
     use cosmwasm_std::Addr;
 
+    /// Returns staker info.
     pub fn get_staker_info(deps: Deps) -> StdResult<GetStakerInfoResponse> {
         let staker_info = STAKER_INFO.load(deps.storage)?;
         Ok(GetStakerInfoResponse {
-            owner: OWNER.load(deps.storage)?,
+            owner: OWNER.load(deps.storage)?.to_string(),
             default_validator: DEFAULT_VALIDATOR.load(deps.storage)?,
-            treasury: staker_info.treasury,
+            treasury: staker_info.treasury.to_string(),
             fee: staker_info.fee,
             distribution_fee: staker_info.distribution_fee,
             min_deposit: staker_info.min_deposit.into(),
@@ -1045,11 +1132,11 @@ pub mod query {
 
         let validators = VALIDATORS
             .range(deps.storage, None, None, Order::Ascending)
-            .collect::<StdResult<Vec<(_, Validator)>>>()
+            .collect::<StdResult<Vec<(_, ValidatorState)>>>()
             .map(|validators| {
                 validators
                     .into_iter()
-                    .map(|(validator_addr, validator)| {
+                    .map(|(validator_addr, validator_state)| {
                         let mut total_staked = Uint128::zero();
                         if let Some(delegation) = deps
                             .querier
@@ -1061,7 +1148,7 @@ pub mod query {
                         ValidatorInfo {
                             addr: validator_addr,
                             total_staked,
-                            state: validator.state,
+                            state: validator_state,
                         }
                     })
                     .collect()
@@ -1079,23 +1166,23 @@ pub mod query {
         })
     }
 
-    // Returns the total staked across all validators.
+    /// Returns the total staked across all validators.
     pub fn get_total_staked(
         deps: Deps,
         contract_address: Addr,
     ) -> StdResult<GetTotalStakedResponse> {
-        let (total_staked, _) = get_total_staked_and_rewards(deps, contract_address).unwrap();
+        let (total_staked, _) = get_total_staked_and_rewards(deps, &contract_address).unwrap();
         Ok(GetTotalStakedResponse {
             total_staked: total_staked.into(),
         })
     }
 
-    // Returns the total rewards across all validators.
+    /// Returns the total rewards across all validators.
     pub fn get_total_rewards(
         deps: Deps,
         contract_address: Addr,
     ) -> StdResult<GetTotalRewardsResponse> {
-        let (_, total_rewards) = get_total_staked_and_rewards(deps, contract_address).unwrap();
+        let (_, total_rewards) = get_total_staked_and_rewards(deps, &contract_address).unwrap();
         Ok(GetTotalRewardsResponse {
             total_rewards: total_rewards.into(),
         })
@@ -1122,7 +1209,7 @@ pub mod query {
         user: Addr,
     ) -> StdResult<GetMaxWithdrawResponse> {
         let shares = query_balance(deps, user.to_string())?.balance.u128();
-        let share_price = get_share_price(deps, contract_address);
+        let share_price = get_share_price(deps, &contract_address);
         let assets =
             convert_to_assets(shares, share_price.numerator, share_price.denominator, true)
                 .unwrap();
@@ -1139,12 +1226,14 @@ pub mod query {
         Ok(claim_response)
     }
 
+    /// Returns whether the user is an agent.
     pub fn is_agent(deps: Deps, agent: Addr) -> StdResult<GetIsAgentResponse> {
         Ok(GetIsAgentResponse {
-            is_agent: whitelist::is_agent(deps, agent).unwrap(),
+            is_agent: whitelist::is_agent(deps, &agent).unwrap(),
         })
     }
 
+    /// Returns whether the user is the owner.
     pub fn is_owner(deps: Deps, addr: Addr) -> StdResult<GetIsOwnerResponse> {
         let owner = OWNER.load(deps.storage)?;
         Ok(GetIsOwnerResponse {
@@ -1152,18 +1241,21 @@ pub mod query {
         })
     }
 
+    /// Returns whether the user is whitelisted.
     pub fn is_user_whitelisted(deps: Deps, user: Addr) -> StdResult<GetIsWhitelistedResponse> {
         Ok(GetIsWhitelistedResponse {
-            is_whitelisted: whitelist::is_user_whitelisted(deps, user),
+            is_whitelisted: whitelist::is_user_whitelisted(deps, &user),
         })
     }
 
+    /// Returns whether the user is blacklisted.
     pub fn is_user_blacklisted(deps: Deps, user: Addr) -> StdResult<GetIsBlacklistedResponse> {
         Ok(GetIsBlacklistedResponse {
-            is_blacklisted: whitelist::is_user_blacklisted(deps, user),
+            is_blacklisted: whitelist::is_user_blacklisted(deps, &user),
         })
     }
 
+    /// Returns the current whitelist status of a user.
     pub fn get_current_user_status(
         deps: Deps,
         user: Addr,
@@ -1173,6 +1265,7 @@ pub mod query {
         })
     }
 
+    /// Returns how much INJ a user can claim following unstaking.
     pub fn get_claimable_amount(
         deps: Deps,
         env: Env,
@@ -1194,7 +1287,7 @@ pub mod query {
     }
 
     /// Returns the current TruINJ share price in INJ.
-    pub fn get_share_price(deps: Deps, contract_address: Addr) -> GetSharePriceResponse {
+    pub fn get_share_price(deps: Deps, contract_address: &Addr) -> GetSharePriceResponse {
         let (total_staked, total_rewards) =
             get_total_staked_and_rewards(deps, contract_address).unwrap();
         let total_assets = CONTRACT_REWARDS.load(deps.storage).unwrap().u128();
@@ -1228,7 +1321,7 @@ pub mod query {
         Ok(GetAllocationsResponse { allocations })
     }
 
-    // Function to view the total amount of INJ allocated by a user and their average allocation share price.
+    /// Returns the total amount of INJ allocated by a user and their average allocation share price.
     pub fn get_total_allocated(deps: Deps, user: Addr) -> StdResult<GetTotalAllocatedResponse> {
         let allocations = allocations()
             .idx
@@ -1263,10 +1356,13 @@ pub mod query {
     pub fn get_distribution_amounts(
         deps: Deps,
         contract_address: Addr,
-        distributor: Addr,
-        recipient: Option<Addr>,
+        distributor: &str,
+        recipient: Option<&String>,
     ) -> StdResult<GetDistributionAmountsResponse> {
-        let share_price = get_share_price(deps, contract_address);
+        let distributor = deps.api.addr_validate(distributor).unwrap();
+        let recipient = recipient.map(|r| deps.api.addr_validate(r).unwrap());
+
+        let share_price = get_share_price(deps, &contract_address);
         let fee = STAKER_INFO.load(deps.storage)?.distribution_fee;
 
         let (total_inj_amount, total_truinj_amount, total_fees) = if let Some(recipient) = recipient
@@ -1321,12 +1417,13 @@ pub mod query {
 }
 
 /// Checks that the caller is the owner of the contract.
-fn check_owner(deps: Deps, user_address: Addr) -> Result<(), ContractError> {
+fn check_owner(deps: Deps, user_address: &Addr) -> Result<(), ContractError> {
     let owner = OWNER.load(deps.storage)?;
     ensure!(user_address == owner, ContractError::OnlyOwner);
     Ok(())
 }
 
+/// Checks that the contract is not paused.
 fn check_not_paused(deps: Deps) -> Result<(), ContractError> {
     ensure!(
         !IS_PAUSED.load(deps.storage)?,
@@ -1335,22 +1432,22 @@ fn check_not_paused(deps: Deps) -> Result<(), ContractError> {
     Ok(())
 }
 
-// Checks that the chosen validator exists and is enabled.
-fn check_validator(deps: Deps, validator_addr: Addr) -> Result<(), ContractError> {
-    let validator = VALIDATORS
-        .may_load(deps.storage, &validator_addr)?
+/// Checks that the chosen validator exists and is enabled.
+fn check_validator(deps: Deps, validator_addr: &String) -> Result<(), ContractError> {
+    let validator_state = VALIDATORS
+        .may_load(deps.storage, validator_addr)?
         .ok_or(ContractError::ValidatorDoesNotExist)?;
     ensure!(
-        validator.state == ValidatorState::ENABLED,
+        validator_state == ValidatorState::Enabled,
         ContractError::ValidatorNotEnabled
     );
     Ok(())
 }
 
-// Function to get the total staked and reward amounts across all validators
+/// Function to get the total staked and reward amounts across all validators.
 fn get_total_staked_and_rewards(
     deps: Deps,
-    contract_address: Addr,
+    contract_address: &Addr,
 ) -> Result<(u128, u128), ContractError> {
     let mut total_staked = 0u128;
     let mut total_rewards = 0u128;
@@ -1377,14 +1474,14 @@ fn get_total_staked_and_rewards(
     Ok((total_staked, total_rewards))
 }
 
-// Stakes the attached INJ to the specified validator.
+/// Stakes the attached INJ to the specified validator.
 fn internal_stake(
     mut deps: DepsMut,
     env: Env,
     info: MessageInfo,
-    validator_addr: Addr,
+    validator_addr: String,
 ) -> Result<Response, ContractError> {
-    check_validator(deps.as_ref(), validator_addr.clone())?;
+    check_validator(deps.as_ref(), &validator_addr)?;
 
     let staker_info = STAKER_INFO.load(deps.storage)?;
 
@@ -1400,7 +1497,7 @@ fn internal_stake(
 
     // fetch data needed to compute the share price
     let (total_staked, total_rewards) =
-        get_total_staked_and_rewards(deps.as_ref(), staker_address.clone())?;
+        get_total_staked_and_rewards(deps.as_ref(), &staker_address)?;
 
     let contract_rewards: Uint128 = CONTRACT_REWARDS.load(deps.storage)?;
 
@@ -1494,12 +1591,12 @@ fn internal_stake(
     ))
 }
 
-// Unstakes a given amount of INJ from a specific validator.
+/// Unstakes a given amount of INJ from a specific validator.
 fn internal_unstake(
     mut deps: DepsMut,
     env: Env,
     info: MessageInfo,
-    validator_addr: Addr,
+    validator_addr: String,
     assets: u128,
 ) -> Result<Response, ContractError> {
     let user_addr = info.sender.clone();
@@ -1510,10 +1607,10 @@ fn internal_unstake(
 
     // calculate the current share price
     let (total_staked, total_rewards) =
-        get_total_staked_and_rewards(deps.as_ref(), contract_addr.clone())?;
+        get_total_staked_and_rewards(deps.as_ref(), &contract_addr)?;
     let contract_rewards = CONTRACT_REWARDS.load(deps.storage)?;
-    let shares_supply = TOKEN_INFO.load(deps.storage).unwrap().total_supply.u128();
-    let staker_info = STAKER_INFO.load(deps.storage).unwrap();
+    let shares_supply = TOKEN_INFO.load(deps.storage)?.total_supply.u128();
+    let staker_info = STAKER_INFO.load(deps.storage)?;
     let fee = staker_info.fee;
 
     let (share_price_num, share_price_denom) = internal_share_price(
@@ -1565,16 +1662,12 @@ fn internal_unstake(
         })
         .unwrap_or((0, 0));
 
-    // Assert the validator has enough funds to unstake.
-    ensure!(
-        assets_to_unstake <= validator_total_staked + validator_total_rewards + 1,
-        ContractError::InsufficientValidatorFunds
-    );
-
-    // A user may unstake more than is currently staked on a validator, if the total amount to unstake is less than or
-    // equal to the total staked + rewards on the validator. In this rare case, we will only unstake the total staked,
-    // but account for the additional unstake amount from the rewards. The reasoning behind this, is so that if there is
-    // a sole user, they should be able to withdraw their max_withdraw amount in one transaction.
+    // A user may unstake an amount of INJ exceeding their current stake on the validator, up to:
+    // validator_total_staked + validator_total_rewards + contract_rewards.
+    // If the unstake amount requested exceeds the stake available on the validator, the contract will unstake all available funds on the validator,
+    // and cover the difference using the validator’s staking rewards (validator_total_rewards), which are transferred directly to the staker,
+    // and the staking rewards held in the contract (contract_rewards).
+    // The reasoning behind this, is so that if there is a sole user, they should be able to withdraw their max_withdraw amount in one transaction.
     let mut actual_amount_to_unstake = assets_to_unstake;
     let mut excess_unstaked_amount = 0;
     if actual_amount_to_unstake > validator_total_staked {
@@ -1582,19 +1675,30 @@ fn internal_unstake(
         actual_amount_to_unstake = validator_total_staked;
     }
 
+    // check that the validator has enough funds to unstake
+    // and that any excess amount unstaked is accounted by the validator and contract rewards
+    ensure!(
+        actual_amount_to_unstake <= validator_total_staked
+            && excess_unstaked_amount
+                <= validator_total_rewards + CONTRACT_REWARDS.load(deps.storage)?.u128(),
+        ContractError::InsufficientValidatorFunds
+    );
+
     // when unstaking, all accrued rewards are moved into the validator.
     // We discount the excess unstaked amount from the rewards because it belongs to the user performing this unstake operation.
     CONTRACT_REWARDS.update(deps.storage, |mut rewards| -> Result<_, ContractError> {
-        rewards += Uint128::from(validator_total_rewards - excess_unstaked_amount);
+        rewards = rewards + Uint128::from(validator_total_rewards)
+            - Uint128::from(excess_unstaked_amount);
         Ok(rewards)
     })?;
 
     // add unbond request to the claims list
+    let expiration = UNBONDING_PERIOD.after(&env.block);
     CLAIMS.create_claim(
         deps.storage,
         &user_addr,
         assets_to_unstake.into(),
-        UNBONDING_PERIOD.after(&env.block),
+        expiration,
     )?;
 
     // mint fees to the treasury for the liquid rewards on the validator
@@ -1637,7 +1741,8 @@ fn internal_unstake(
                     query_balance(deps.as_ref(), staker_info.treasury.into_string())?.balance,
                 )
                 .add_attribute("total_staked", new_total_staked.to_string())
-                .add_attribute("total_supply", new_shares_supply.to_string()),
+                .add_attribute("total_supply", new_shares_supply.to_string())
+                .add_attribute("expires_at", expiration.get_value().to_string()),
         );
 
     Ok(res)
@@ -1701,48 +1806,59 @@ fn internal_share_price(
     (price_num, price_denom)
 }
 
+/// Distributes rewards for the given allocation.
 fn internal_distribute(
     mut deps: DepsMut,
     env: Env,
-    distributor: &Addr,
-    recipient: &Addr,
     allocation: Allocation,
     in_inj: bool,
-    global_price_num: Uint256,
-    global_price_denom: Uint256,
+    global_share_price: &GetSharePriceResponse,
     attached_inj_amount: u128,
+    staker_info: &StakerInfo,
 ) -> Result<Option<DistributionInfo>, ContractError> {
-    // if the share price of the allocation is the same as the global share price, no distribution is needed
+    // No distribution is needed if the share price of the allocation is the same as the global share price,
+    // or if it's higher due to slashing.
     if allocation.share_price_num / allocation.share_price_denom
-        == global_price_num / global_price_denom
+        >= global_share_price.numerator / global_share_price.denominator
     {
         return Ok(None);
     }
 
-    let staker_info = STAKER_INFO.load(deps.storage)?;
-    let treasury = staker_info.treasury;
     let dist_fee = staker_info.distribution_fee;
+    let treasury = &staker_info.treasury;
 
-    let (assets_to_distribute, shares_to_distribute, fees) =
-        calculate_distribution_amounts(&allocation, global_price_num, global_price_denom, dist_fee)
-            .unwrap();
+    let (assets_to_distribute, shares_to_distribute, fees) = calculate_distribution_amounts(
+        &allocation,
+        global_share_price.numerator,
+        global_share_price.denominator,
+        dist_fee,
+    )?;
 
-    if in_inj {
+    let inj_transfer = if in_inj {
         ensure!(
             attached_inj_amount >= assets_to_distribute,
             ContractError::InsufficientInjAttached
         );
         ensure!(
-            query_balance(deps.as_ref(), distributor.to_string())?
+            query_balance(deps.as_ref(), allocation.allocator.to_string())?
                 .balance
                 .u128()
                 >= fees,
             ContractError::InsufficientTruINJBalance
         );
+
+        // return the message to send INJ to the recipient
+        Some(BankMsg::Send {
+            to_address: allocation.recipient.to_string(),
+            amount: vec![Coin {
+                denom: INJ.to_string(),
+                amount: assets_to_distribute.into(),
+            }],
+        })
     } else {
         // check that the distributor has enough TruINJ to distribute and pay the fees
         ensure!(
-            query_balance(deps.as_ref(), distributor.to_string())?
+            query_balance(deps.as_ref(), allocation.allocator.to_string())?
                 .balance
                 .u128()
                 >= shares_to_distribute + fees,
@@ -1754,12 +1870,15 @@ fn internal_distribute(
             deps.branch(),
             env.clone(),
             MessageInfo {
-                sender: distributor.clone(),
+                sender: allocation.allocator.clone(),
                 funds: vec![],
             },
-            recipient.to_string(),
+            allocation.recipient.to_string(),
             Uint128::from(shares_to_distribute),
         )?;
+
+        // No INJ transfer needed
+        None
     };
 
     // transfer fees to the treasury
@@ -1768,13 +1887,25 @@ fn internal_distribute(
             deps.branch(),
             env,
             MessageInfo {
-                sender: distributor.clone(),
+                sender: allocation.allocator.clone(),
                 funds: vec![],
             },
             treasury.to_string(),
             Uint128::from(fees),
         )?;
     }
+
+    // update the share price of the allocation
+    allocations().update(
+        deps.storage,
+        (allocation.allocator.clone(), allocation.recipient.clone()),
+        |existing| -> Result<_, ContractError> {
+            let mut updated_alloc = existing.unwrap();
+            updated_alloc.share_price_num = global_share_price.numerator;
+            updated_alloc.share_price_denom = global_share_price.denominator;
+            Ok(updated_alloc)
+        },
+    )?;
 
     // determine the amount of INJ to refund to the distributor
     let refund_amount = if in_inj {
@@ -1783,28 +1914,39 @@ fn internal_distribute(
         attached_inj_amount
     };
 
-    let distribution_info = DistributionInfo {
-        user: distributor.clone(),
-        recipient: recipient.clone(),
-        user_balance: query_balance(deps.as_ref(), distributor.to_string())?
-            .balance
-            .u128(),
-        recipient_balance: query_balance(deps.as_ref(), recipient.to_string())?
-            .balance
-            .u128(),
-        treasury_balance: query_balance(deps.as_ref(), treasury.to_string())?
-            .balance
-            .u128(),
-        shares: shares_to_distribute,
-        inj_amount: assets_to_distribute,
-        in_inj,
-        share_price_num: global_price_num,
-        share_price_denom: global_price_denom,
-        fees,
-        refund_amount,
-    };
+    let distribution_event = Event::new("distributed_rewards")
+        .add_attribute("user", allocation.allocator.clone())
+        .add_attribute("recipient", allocation.recipient.clone())
+        .add_attribute(
+            "user_balance",
+            query_balance(deps.as_ref(), allocation.allocator.to_string())?
+                .balance
+                .to_string(),
+        )
+        .add_attribute(
+            "recipient_balance",
+            query_balance(deps.as_ref(), allocation.recipient.to_string())?
+                .balance
+                .to_string(),
+        )
+        .add_attribute(
+            "treasury_balance",
+            query_balance(deps.as_ref(), treasury.to_string())?
+                .balance
+                .to_string(),
+        )
+        .add_attribute("fees", fees.to_string())
+        .add_attribute("shares", shares_to_distribute.to_string())
+        .add_attribute("inj_amount", assets_to_distribute.to_string())
+        .add_attribute("in_inj", in_inj.to_string())
+        .add_attribute("share_price_num", global_share_price.numerator)
+        .add_attribute("share_price_denom", global_share_price.denominator);
 
-    Ok(Some(distribution_info))
+    Ok(Some(DistributionInfo {
+        refund_amount,
+        distribution_event,
+        inj_transfer,
+    }))
 }
 
 /// Mints fees to the treasury for the amount of staking rewards provided.
@@ -1866,32 +2008,6 @@ fn calculate_updated_allocation(
     })
 }
 
-#[cfg(any(test, feature = "test"))]
-pub fn test_allocate(
-    deps: DepsMut,
-    env: Env,
-    distributor: Addr,
-    recipient: Addr,
-    amount: Uint128,
-) -> Result<Response, ContractError> {
-    use query::get_share_price;
-
-    let share_price_response = get_share_price(deps.as_ref(), env.contract.address);
-    allocations().save(
-        deps.storage,
-        (distributor.clone(), recipient.clone()),
-        &Allocation {
-            allocator: distributor,
-            recipient,
-            inj_amount: amount,
-            share_price_num: share_price_response.numerator,
-            share_price_denom: share_price_response.denominator,
-        },
-    )?;
-
-    Ok(Response::new().add_event(Event::new("allocated")))
-}
-
 /// For a given allocation returns a tuple containing the amount of INJ and TruINJ required for the distribution,
 /// as well as the fees in TruINJ that will be paid to the treasury.
 fn calculate_distribution_amounts(
@@ -1932,6 +2048,69 @@ fn calculate_distribution_amounts(
     Ok((assets_to_distribute, shares_to_distribute, fees))
 }
 
+#[cfg(any(test, feature = "test"))]
+pub fn test_allocate(
+    deps: DepsMut,
+    env: Env,
+    distributor: Addr,
+    recipient: &str,
+    amount: Uint128,
+) -> Result<Response, ContractError> {
+    use query::get_share_price;
+
+    let recipient_addr = deps.api.addr_validate(recipient)?;
+
+    let share_price_response = get_share_price(deps.as_ref(), &env.contract.address);
+    allocations().save(
+        deps.storage,
+        (distributor.clone(), recipient_addr.clone()),
+        &Allocation {
+            allocator: distributor,
+            recipient: recipient_addr,
+            inj_amount: amount,
+            share_price_num: share_price_response.numerator,
+            share_price_denom: share_price_response.denominator,
+        },
+    )?;
+
+    Ok(Response::new().add_event(Event::new("allocated")))
+}
+
+#[cfg(any(test, feature = "test"))]
+pub fn test_mint(
+    deps: DepsMut,
+    env: Env,
+    contract_addr: Addr,
+    recipient: Addr,
+    amount: Uint128,
+) -> Result<Response, ContractError> {
+    execute_mint(
+        deps,
+        env,
+        MessageInfo {
+            sender: contract_addr,
+            funds: vec![],
+        },
+        recipient.into_string(),
+        amount,
+    )?;
+
+    Ok(Response::new().add_event(Event::new("minted")))
+}
+
+#[cfg(any(test, feature = "test"))]
+pub fn test_set_min_deposit(
+    deps: DepsMut,
+    new_min_deposit: Uint128,
+) -> Result<Response, ContractError> {
+    STAKER_INFO.update(deps.storage, |mut state| -> Result<_, ContractError> {
+        state.min_deposit = new_min_deposit.into();
+        Ok(state)
+    })?;
+
+    Ok(Response::new().add_event(Event::new("set_min_deposit")))
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -1940,7 +2119,7 @@ mod tests {
     use crate::state::{UserStatus, IS_PAUSED, WHITELIST_USERS};
     use cosmwasm_std::testing::{message_info, mock_dependencies, mock_env};
     use cosmwasm_std::{
-        coins, from_json, Addr, ConversionOverflowError, DivideByZeroError, Uint128,
+        coins, from_json, Addr, ConversionOverflowError, Decimal, DivideByZeroError, Uint128,
     };
     use cw20::BalanceResponse;
     use cw_multi_test::{App, ContractWrapper, Executor, IntoBech32};
@@ -1950,14 +2129,24 @@ mod tests {
         let mut deps = mock_dependencies();
 
         let owner: Addr = "owner".into_bech32();
-        let default_validator: Addr = "my-validator".into_bech32();
-        let treasury: Addr = "treasury".into_bech32();
+        let default_validator: String = "my-validator".into_bech32().into_string();
+        let treasury: String = "treasury".into_bech32().into_string();
+
+        // mock validator existence
+        let validator = cosmwasm_std::Validator::new(
+            default_validator.clone(),
+            Decimal::percent(2),
+            Decimal::percent(100),
+            Decimal::percent(1),
+        );
+        deps.querier.staking.update("inj", &[validator], &[]);
 
         let res = instantiate(
             deps.as_mut(),
             mock_env(),
-            message_info(&owner, &coins(1000, INJ)),
+            message_info(&owner, &coins(ONE_INJ, INJ)),
             InstantiateMsg {
+                owner: owner.to_string(),
                 default_validator: default_validator.clone(),
                 treasury: treasury.clone(),
             },
@@ -1984,29 +2173,74 @@ mod tests {
         let value: GetStakerInfoResponse = from_json(&res).unwrap();
         assert_eq!(value.default_validator, default_validator);
         assert_eq!(value.treasury, treasury);
-        assert_eq!(value.owner, owner);
+        assert_eq!(value.owner, owner.into_string());
+    }
+
+    #[test]
+    fn test_instantiate_with_non_existent_validator_fails() {
+        let mut deps = mock_dependencies();
+
+        let owner: Addr = "owner".into_bech32();
+        let default_validator: String = "my-validator".into_bech32().into_string();
+        let treasury: String = "treasury".into_bech32().into_string();
+
+        let res = instantiate(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&owner, &coins(1000, INJ)),
+            InstantiateMsg {
+                owner: owner.to_string(),
+                default_validator,
+                treasury,
+            },
+        );
+        assert_eq!(res.unwrap_err(), ContractError::NotInValidatorSet);
     }
 
     #[test]
     fn instantiation_mints_no_tokens_to_owner() {
         let mut app = App::default();
         let owner: Addr = "owner".into_bech32();
-        let default_validator: Addr = "my-validator".into_bech32();
-        let treasury: Addr = "treasury".into_bech32();
+
+        app.sudo(cw_multi_test::SudoMsg::Bank(
+            cw_multi_test::BankSudo::Mint {
+                to_address: owner.to_string(),
+                amount: vec![Coin::new(ONE_INJ, INJ)],
+            },
+        ))
+        .unwrap();
+
+        let default_validator: String = "my-validator".into_bech32().into_string();
+        let treasury: String = "treasury".into_bech32().into_string();
         let code = ContractWrapper::new(execute, instantiate, query);
         let code_id = app.store_code(Box::new(code));
+
+        // mock validator existence
+        let validator = cosmwasm_std::Validator::new(
+            default_validator.clone(),
+            Decimal::percent(2),
+            Decimal::percent(100),
+            Decimal::percent(1),
+        );
+        app.init_modules(|router, api, storage| {
+            router
+                .staking
+                .add_validator(api, storage, &mock_env().block, validator)
+                .unwrap();
+        });
 
         let user = app.api().addr_make("user");
 
         let addr = app
             .instantiate_contract(
                 code_id,
-                owner,
+                owner.clone(),
                 &InstantiateMsg {
+                    owner: owner.to_string(),
                     default_validator,
                     treasury,
                 },
-                &[],
+                &[Coin::new(ONE_INJ, INJ)],
                 "Contract",
                 None,
             )
@@ -2039,7 +2273,7 @@ mod tests {
         let _ = WHITELIST_USERS.save(&mut deps.storage, &user, &UserStatus::Whitelisted);
 
         // verify that Ok() is returned
-        assert!(whitelist::check_whitelisted(deps.as_ref(), user).is_ok())
+        assert!(whitelist::check_whitelisted(deps.as_ref(), &user).is_ok())
     }
 
     #[test]
@@ -2050,7 +2284,7 @@ mod tests {
         let user = "user".into_bech32();
 
         // verify that the expected error is returned
-        let error = whitelist::check_whitelisted(deps.as_ref(), user);
+        let error = whitelist::check_whitelisted(deps.as_ref(), &user);
         assert!(error.is_err());
         assert_eq!(error, Err(ContractError::UserNotWhitelisted));
     }

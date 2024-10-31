@@ -20,11 +20,10 @@ mod setters {
         let owner = "owner".into_bech32();
         let new_fee: u16 = 1000;
 
-        let (mut app, staking_contract, _) =
-            instantiate_staker(owner.clone(), "treasury".into_bech32());
+        let (mut app, staker_addr, _) = instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         let msg = WasmMsg::Execute {
-            contract_addr: staking_contract.addr().to_string(),
+            contract_addr: staker_addr.to_string(),
             msg: to_json_binary(&ExecuteMsg::SetFee { new_fee }).unwrap(),
             funds: vec![],
         };
@@ -56,7 +55,7 @@ mod setters {
 
         let staker_info: GetStakerInfoResponse = app
             .wrap()
-            .query_wasm_smart(staking_contract.addr(), &QueryMsg::GetStakerInfo {})
+            .query_wasm_smart(staker_addr, &QueryMsg::GetStakerInfo {})
             .unwrap();
 
         assert_eq!(staker_info.fee, new_fee);
@@ -66,11 +65,10 @@ mod setters {
     fn test_set_fee_entered_fee_above_precision() {
         let owner = "owner".into_bech32();
 
-        let (mut app, staking_contract, _) =
-            instantiate_staker(owner.clone(), "treasury".into_bech32());
+        let (mut app, staker_addr, _) = instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         let msg = WasmMsg::Execute {
-            contract_addr: staking_contract.addr().to_string(),
+            contract_addr: staker_addr.to_string(),
             msg: to_json_binary(&ExecuteMsg::SetFee { new_fee: 10500 }).unwrap(),
             funds: vec![],
         };
@@ -88,10 +86,10 @@ mod setters {
     fn test_set_fee_can_only_be_called_by_the_owner() {
         let owner = "owner".into_bech32();
 
-        let (mut app, staking_contract, _) = instantiate_staker(owner, "treasury".into_bech32());
+        let (mut app, staker_addr, _) = instantiate_staker(owner, "treasury".into_bech32());
 
         let msg = WasmMsg::Execute {
-            contract_addr: staking_contract.addr().to_string(),
+            contract_addr: staker_addr.to_string(),
             msg: to_json_binary(&ExecuteMsg::SetFee { new_fee: 1000 }).unwrap(),
             funds: vec![],
         };
@@ -110,11 +108,10 @@ mod setters {
         let owner = "owner".into_bech32();
         let new_fee: u16 = 1000;
 
-        let (mut app, staker_contract, _) =
-            instantiate_staker(owner.clone(), "treasury".into_bech32());
+        let (mut app, staker_addr, _) = instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         let msg = WasmMsg::Execute {
-            contract_addr: staker_contract.addr().to_string(),
+            contract_addr: staker_addr.to_string(),
             msg: to_json_binary(&ExecuteMsg::SetDistributionFee {
                 new_distribution_fee: new_fee,
             })
@@ -148,7 +145,7 @@ mod setters {
 
         let staker_info: GetStakerInfoResponse = app
             .wrap()
-            .query_wasm_smart(staker_contract.addr(), &QueryMsg::GetStakerInfo {})
+            .query_wasm_smart(staker_addr, &QueryMsg::GetStakerInfo {})
             .unwrap();
 
         assert_eq!(staker_info.distribution_fee, new_fee);
@@ -158,11 +155,10 @@ mod setters {
     fn test_set_distribution_fee_entered_fee_above_precision() {
         let owner = "owner".into_bech32();
 
-        let (mut app, staker_contract, _) =
-            instantiate_staker(owner.clone(), "treasury".into_bech32());
+        let (mut app, staker_addr, _) = instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         let msg = WasmMsg::Execute {
-            contract_addr: staker_contract.addr().to_string(),
+            contract_addr: staker_addr.to_string(),
             msg: to_json_binary(&ExecuteMsg::SetDistributionFee {
                 new_distribution_fee: 10500,
             })
@@ -183,10 +179,10 @@ mod setters {
     fn test_set_distribution_fee_can_only_be_called_by_the_owner() {
         let owner = "owner".into_bech32();
 
-        let (mut app, staking_contract, _) = instantiate_staker(owner, "treasury".into_bech32());
+        let (mut app, staker_addr, _) = instantiate_staker(owner, "treasury".into_bech32());
 
         let msg = WasmMsg::Execute {
-            contract_addr: staking_contract.addr().to_string(),
+            contract_addr: staker_addr.to_string(),
             msg: to_json_binary(&ExecuteMsg::SetDistributionFee {
                 new_distribution_fee: 1000,
             })
@@ -208,10 +204,9 @@ mod setters {
         let owner = "owner".into_bech32();
         let new_min_deposit: u128 = 2 * ONE_INJ;
 
-        let (mut app, staker_contract, _) =
-            instantiate_staker(owner.clone(), "treasury".into_bech32());
+        let (mut app, staker_addr, _) = instantiate_staker(owner.clone(), "treasury".into_bech32());
         let msg = WasmMsg::Execute {
-            contract_addr: staker_contract.addr().to_string(),
+            contract_addr: staker_addr.to_string(),
             msg: to_json_binary(&ExecuteMsg::SetMinimumDeposit {
                 new_min_deposit: new_min_deposit.into(),
             })
@@ -245,7 +240,7 @@ mod setters {
 
         let staker_info: GetStakerInfoResponse = app
             .wrap()
-            .query_wasm_smart(staker_contract.addr(), &QueryMsg::GetStakerInfo {})
+            .query_wasm_smart(staker_addr, &QueryMsg::GetStakerInfo {})
             .unwrap();
 
         assert_eq!(staker_info.min_deposit, Uint128::from(new_min_deposit));
@@ -255,10 +250,10 @@ mod setters {
     fn test_set_min_deposit_can_only_be_called_by_the_owner() {
         let owner = "owner".into_bech32();
 
-        let (mut app, staker_contract, _) = instantiate_staker(owner, "treasury".into_bech32());
+        let (mut app, staker_addr, _) = instantiate_staker(owner, "treasury".into_bech32());
 
         let msg = WasmMsg::Execute {
-            contract_addr: staker_contract.addr().to_string(),
+            contract_addr: staker_addr.to_string(),
             msg: to_json_binary(&ExecuteMsg::SetMinimumDeposit {
                 new_min_deposit: ONE_INJ.into(),
             })
@@ -278,32 +273,31 @@ mod setters {
         );
     }
 
-    // #[test]
-    // fn test_set_min_deposit_entered_deposit_less_than_min_deposit() {
-    //     let owner = "owner".into_bech32();
+    #[test]
+    fn test_set_min_deposit_entered_deposit_less_than_min_deposit() {
+        let owner = "owner".into_bech32();
 
-    //     let (mut app, staker_contract, _) =
-    //         instantiate_staker(owner.clone(), "treasury".into_bech32());
+        let (mut app, staker_addr, _) = instantiate_staker(owner.clone(), "treasury".into_bech32());
 
-    //     let msg = WasmMsg::Execute {
-    //         contract_addr: staker_contract.addr().to_string(),
-    //         msg: to_json_binary(&ExecuteMsg::SetMinimumDeposit {
-    //             new_min_deposit: Uint128::new(100_000_000),
-    //         })
-    //         .unwrap(),
-    //         funds: vec![],
-    //     };
+        let msg = WasmMsg::Execute {
+            contract_addr: staker_addr.to_string(),
+            msg: to_json_binary(&ExecuteMsg::SetMinimumDeposit {
+                new_min_deposit: Uint128::new(100_000_000),
+            })
+            .unwrap(),
+            funds: vec![],
+        };
 
-    //     let response = app.execute(owner, msg.into());
-    //     assert!(response.is_err());
+        let response = app.execute(owner, msg.into());
+        assert!(response.is_err());
 
-    //     let error_response = response.as_ref().unwrap_err().source().unwrap();
+        let error_response = response.as_ref().unwrap_err().source().unwrap();
 
-    //     assert_eq!(
-    //         error_response.to_string(),
-    //         "Minimum deposit amount is too small"
-    //     );
-    // }
+        assert_eq!(
+            error_response.to_string(),
+            "Minimum deposit amount is too small"
+        );
+    }
 
     #[test]
     fn test_set_treasury() {
@@ -311,13 +305,13 @@ mod setters {
         let old_treasury_addr = "treasury".into_bech32();
         let new_treasury_addr = "new_treasury_addr".into_bech32();
 
-        let (mut app, staking_contract, _) =
+        let (mut app, staker_addr, _) =
             instantiate_staker(owner.clone(), old_treasury_addr.clone());
 
         let msg = WasmMsg::Execute {
-            contract_addr: staking_contract.addr().to_string(),
+            contract_addr: staker_addr.to_string(),
             msg: to_json_binary(&ExecuteMsg::SetTreasury {
-                new_treasury_addr: new_treasury_addr.clone(),
+                new_treasury_addr: new_treasury_addr.to_string(),
             })
             .unwrap(),
             funds: vec![],
@@ -333,15 +327,15 @@ mod setters {
                 ("new_treasury_addr", new_treasury_addr.clone()).into(),
                 ("old_treasury_addr", old_treasury_addr).into(),
             ],
-            staking_contract.addr(),
+            staker_addr.clone(),
         );
 
         let staker_info: GetStakerInfoResponse = app
             .wrap()
-            .query_wasm_smart(staking_contract.addr(), &QueryMsg::GetStakerInfo {})
+            .query_wasm_smart(staker_addr, &QueryMsg::GetStakerInfo {})
             .unwrap();
 
-        assert_eq!(staker_info.treasury, new_treasury_addr);
+        assert_eq!(staker_info.treasury, new_treasury_addr.to_string());
     }
 
     #[test]
@@ -351,11 +345,14 @@ mod setters {
         let old_treasury_addr = "treasury".into_bech32();
         let new_treasury_addr = Addr::unchecked("new_treasury_addr");
 
-        let (mut app, staking_contract, _) = instantiate_staker(owner.clone(), old_treasury_addr);
+        let (mut app, staker_addr, _) = instantiate_staker(owner.clone(), old_treasury_addr);
 
         let msg = WasmMsg::Execute {
-            contract_addr: staking_contract.addr().to_string(),
-            msg: to_json_binary(&ExecuteMsg::SetTreasury { new_treasury_addr }).unwrap(),
+            contract_addr: staker_addr.to_string(),
+            msg: to_json_binary(&ExecuteMsg::SetTreasury {
+                new_treasury_addr: new_treasury_addr.to_string(),
+            })
+            .unwrap(),
             funds: vec![],
         };
 
@@ -368,12 +365,12 @@ mod setters {
         let old_treasury_addr = "treasury".into_bech32();
         let new_treasury_addr = "new_treasury_addr".into_bech32();
 
-        let (mut app, staking_contract, _) = instantiate_staker(owner, old_treasury_addr);
+        let (mut app, staker_addr, _) = instantiate_staker(owner, old_treasury_addr);
 
         let msg = WasmMsg::Execute {
-            contract_addr: staking_contract.addr().to_string(),
+            contract_addr: staker_addr.to_string(),
             msg: to_json_binary(&ExecuteMsg::SetTreasury {
-                new_treasury_addr: new_treasury_addr.clone(),
+                new_treasury_addr: new_treasury_addr.to_string(),
             })
             .unwrap(),
             funds: vec![],
@@ -388,21 +385,21 @@ mod setters {
         let owner = "owner".into_bech32();
         let new_default_validator_addr = "new_default_validator_addr".into_bech32();
 
-        let (mut app, staking_contract, old_default_validator_addr) =
+        let (mut app, staker_addr, old_default_validator_addr) =
             instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         let add_validator_response = add_validator(
             &mut app,
             owner.clone(),
-            &staking_contract.addr(),
+            &staker_addr,
             new_default_validator_addr.clone(),
         );
         assert!(add_validator_response.is_ok());
 
         let msg = WasmMsg::Execute {
-            contract_addr: staking_contract.addr().to_string(),
+            contract_addr: staker_addr.to_string(),
             msg: to_json_binary(&ExecuteMsg::SetDefaultValidator {
-                new_default_validator_addr: new_default_validator_addr.clone(),
+                new_default_validator_addr: new_default_validator_addr.to_string(),
             })
             .unwrap(),
             funds: vec![],
@@ -422,15 +419,18 @@ mod setters {
                     .into(),
                 ("old_default_validator_addr", old_default_validator_addr).into(),
             ],
-            staking_contract.addr(),
+            staker_addr.clone(),
         );
 
         let staker_info: GetStakerInfoResponse = app
             .wrap()
-            .query_wasm_smart(staking_contract.addr(), &QueryMsg::GetStakerInfo {})
+            .query_wasm_smart(staker_addr, &QueryMsg::GetStakerInfo {})
             .unwrap();
 
-        assert_eq!(staker_info.default_validator, new_default_validator_addr);
+        assert_eq!(
+            staker_info.default_validator,
+            new_default_validator_addr.to_string()
+        );
     }
 
     #[test]
@@ -438,13 +438,12 @@ mod setters {
         let owner = "owner".into_bech32();
         let new_default_validator_addr = "new_default_validator_addr".into_bech32();
 
-        let (mut app, staking_contract, _) =
-            instantiate_staker(owner.clone(), "treasury".into_bech32());
+        let (mut app, staker_addr, _) = instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         let msg = WasmMsg::Execute {
-            contract_addr: staking_contract.addr().to_string(),
+            contract_addr: staker_addr.to_string(),
             msg: to_json_binary(&ExecuteMsg::SetDefaultValidator {
-                new_default_validator_addr,
+                new_default_validator_addr: new_default_validator_addr.to_string(),
             })
             .unwrap(),
             funds: vec![],
@@ -459,13 +458,12 @@ mod setters {
         let owner = "owner".into_bech32();
         let new_default_validator_addr = "new_default_validator_addr".into_bech32();
 
-        let (mut app, staking_contract, _) =
-            instantiate_staker(owner.clone(), "treasury".into_bech32());
+        let (mut app, staker_addr, _) = instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         let add_validator_response = add_validator(
             &mut app,
             owner.clone(),
-            &staking_contract.addr(),
+            &staker_addr,
             new_default_validator_addr.clone(),
         );
         assert!(add_validator_response.is_ok());
@@ -473,14 +471,14 @@ mod setters {
         disable_validator(
             &mut app,
             owner.clone(),
-            &staking_contract.addr(),
+            &staker_addr,
             new_default_validator_addr.clone(),
         )
         .unwrap();
         let msg = WasmMsg::Execute {
-            contract_addr: staking_contract.addr().to_string(),
+            contract_addr: staker_addr.to_string(),
             msg: to_json_binary(&ExecuteMsg::SetDefaultValidator {
-                new_default_validator_addr,
+                new_default_validator_addr: new_default_validator_addr.to_string(),
             })
             .unwrap(),
             funds: vec![],
@@ -495,12 +493,12 @@ mod setters {
         let owner = "owner".into_bech32();
         let new_default_validator_addr = "new_default_validator_addr".into_bech32();
 
-        let (mut app, staking_contract, _) = instantiate_staker(owner, "treasury".into_bech32());
+        let (mut app, staker_addr, _) = instantiate_staker(owner, "treasury".into_bech32());
 
         let msg = WasmMsg::Execute {
-            contract_addr: staking_contract.addr().to_string(),
+            contract_addr: staker_addr.to_string(),
             msg: to_json_binary(&ExecuteMsg::SetDefaultValidator {
-                new_default_validator_addr: new_default_validator_addr.clone(),
+                new_default_validator_addr: new_default_validator_addr.to_string(),
             })
             .unwrap(),
             funds: vec![],

@@ -107,6 +107,9 @@ pub enum ContractError {
     #[error("Insufficient funds on validator")]
     InsufficientValidatorFunds,
 
+    #[error("Insufficient funds on staker")]
+    InsufficientStakerFunds,
+
     #[error("Cannot allocate to self")]
     InvalidRecipient,
 
@@ -124,6 +127,9 @@ pub enum ContractError {
 
     #[error("No allocations")]
     NoAllocations,
+
+    #[error("Validator is not in validator set")]
+    NotInValidatorSet,
 }
 
 impl From<cw20_base::ContractError> for ContractError {

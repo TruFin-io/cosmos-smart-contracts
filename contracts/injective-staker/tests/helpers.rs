@@ -3,8 +3,8 @@ use cosmwasm_std::{
     WasmMsg,
 };
 use cosmwasm_std::{
-    Attribute, DelegationResponse, DistributionMsg, Event, FullDelegation, StakingQuery, Uint128,
-    Uint256, Uint512,
+    Attribute, Coin, DelegationResponse, DistributionMsg, Event, FullDelegation, StakingQuery,
+    Uint128, Uint256, Uint512,
 };
 use cw20::BalanceResponse;
 use cw_controllers::{Claim, ClaimsResponse};
@@ -12,7 +12,7 @@ use cw_multi_test::error::AnyError;
 use cw_multi_test::{
     App, AppBuilder, AppResponse, Contract, ContractWrapper, Executor, IntoBech32, StakingInfo,
 };
-use injective_staker::constants::INJ;
+use injective_staker::constants::{INJ, ONE_INJ};
 use injective_staker::contract::{execute, instantiate, query};
 use injective_staker::msg::{
     ExecuteMsg, GetAllocationsResponse, GetClaimableAmountResponse, GetCurrentUserStatusResponse,
@@ -83,21 +83,30 @@ pub fn mock_app_with_validator() -> (App, Addr) {
     (app, validator_addr)
 }
 
-pub fn instantiate_staker(admin: Addr, treasury: Addr) -> (App, StakerContract, Addr) {
+pub fn instantiate_staker(admin: Addr, treasury: Addr) -> (App, Addr, Addr) {
     let (mut app, validator_addr) = mock_app_with_validator();
     let code_id = app.store_code(contract_wrapper());
-
     let msg = InstantiateMsg {
-        treasury,
-        default_validator: validator_addr.clone(),
+        owner: "owner".into_bech32().into_string(),
+        treasury: treasury.to_string(),
+        default_validator: validator_addr.to_string(),
     };
+
+    mint_inj(&mut app, &admin, ONE_INJ);
     let staker_contract_addr = app
-        .instantiate_contract(code_id, admin, &msg, &[], "staker-contract", None)
+        .instantiate_contract(
+            code_id,
+            admin,
+            &msg,
+            &[Coin::new(1u128, INJ)],
+            "staker-contract",
+            None,
+        )
         .unwrap();
 
     let staker_contract = StakerContract(staker_contract_addr);
 
-    (app, staker_contract, validator_addr)
+    (app, staker_contract.addr(), validator_addr)
 }
 
 pub fn instantiate_staker_with_min_deposit(
@@ -105,17 +114,12 @@ pub fn instantiate_staker_with_min_deposit(
     treasury: Addr,
     min_deposit: u128,
 ) -> (App, Addr, Addr) {
-    let (mut app, staker_contract, validator_addr) = instantiate_staker(admin.clone(), treasury);
+    let (mut app, staker_addr, validator_addr) = instantiate_staker(admin.clone(), treasury);
 
     // set min deposit
-    set_min_deposit_for_test_overflow(
-        &mut app,
-        staker_contract.addr().to_string(),
-        admin,
-        min_deposit,
-    );
+    set_min_deposit_for_test_overflow(&mut app, staker_addr.to_string(), admin, min_deposit);
 
-    (app, staker_contract.addr(), validator_addr)
+    (app, staker_addr, validator_addr)
 }
 
 pub fn instantiate_staker_with_min_deposit_and_initial_stake(
@@ -136,6 +140,18 @@ pub fn instantiate_staker_with_min_deposit_and_initial_stake(
     }
 
     (app, staker_contract, validator_addr)
+}
+
+pub fn instantiate_mock_cw20_receiver(app: &mut App, owner: &Addr) -> Addr {
+    let contract = ContractWrapper::new(
+        mock_cw20_receiver::execute,
+        mock_cw20_receiver::instantiate,
+        mock_cw20_receiver::query,
+    );
+    let code_id = app.store_code(Box::new(contract));
+    let msg = mock_cw20_receiver::InstantiateMsg {};
+    app.instantiate_contract(code_id, owner.clone(), &msg, &[], "mock-receiver", None)
+        .unwrap()
 }
 
 // Helper function to add a validator to the app
@@ -168,6 +184,26 @@ pub fn mint_inj(app: &mut App, addr: &Addr, amount: u128) {
         },
     ))
     .unwrap();
+}
+
+pub fn mint_truinj(
+    app: &mut App,
+    contract_addr: &Addr,
+    sender: &Addr,
+    recipient: &Addr,
+    amount: u128,
+) {
+    let cosmos_msg = WasmMsg::Execute {
+        contract_addr: contract_addr.to_string(),
+        msg: to_json_binary(&ExecuteMsg::TestMint {
+            recipient: recipient.clone(),
+            amount: amount.into(),
+        })
+        .unwrap(),
+        funds: vec![],
+    };
+    let response = app.execute(sender.clone(), cosmos_msg.into());
+    assert!(response.is_ok());
 }
 
 pub fn query_truinj_balance(app: &App, addr: &Addr, contract_address: &Addr) -> u128 {
@@ -203,7 +239,10 @@ pub fn add_validator(
     contract_addr: &Addr,
     validator: Addr,
 ) -> Result<AppResponse, AnyError> {
-    let msg = ExecuteMsg::AddValidator { validator };
+    add_validator_to_app(app, validator.to_string());
+    let msg = ExecuteMsg::AddValidator {
+        validator: validator.to_string(),
+    };
 
     let cosmos_msg = WasmMsg::Execute {
         contract_addr: contract_addr.to_string(),
@@ -237,7 +276,7 @@ pub fn stake_to_specific_validator(
     validator_addr: &Addr,
 ) -> Result<AppResponse, AnyError> {
     let msg = ExecuteMsg::StakeToSpecificValidator {
-        validator_addr: validator_addr.clone(),
+        validator_addr: validator_addr.to_string(),
     };
 
     let cosmos_msg = WasmMsg::Execute {
@@ -257,7 +296,7 @@ pub fn stake_when_rewards_accrued(
     validator_addr: &Addr,
 ) -> Result<AppResponse, AnyError> {
     let msg = ExecuteMsg::StakeToSpecificValidator {
-        validator_addr: validator_addr.clone(),
+        validator_addr: validator_addr.to_string(),
     };
     let cosmos_msg = WasmMsg::Execute {
         contract_addr: contract_addr.to_string(),
@@ -303,7 +342,7 @@ pub fn unstake_when_rewards_accrue(
     validator_addr: &Addr,
 ) -> Result<AppResponse, AnyError> {
     let msg = ExecuteMsg::UnstakeFromSpecificValidator {
-        validator_addr: validator_addr.clone(),
+        validator_addr: validator_addr.to_string(),
         amount: amount.into(),
     };
 
@@ -317,14 +356,25 @@ pub fn unstake_when_rewards_accrue(
             validator: validator_addr.to_string(),
         });
 
+    // fetch the amount of rewards to collect
     let delegation = get_delegation(app, contract_addr.clone().to_string(), validator_addr);
+    let rewards = delegation
+        .accumulated_rewards
+        .iter()
+        .find(|x| x.denom == INJ)
+        .unwrap_or(&Coin {
+            denom: INJ.to_string(),
+            amount: Uint128::zero(),
+        })
+        .amount
+        .u128();
 
     let unstake_res = app.execute(sender.clone(), cosmos_msg.into());
     let collect_rewards_res = app.execute(contract_addr.clone(), collect_rewards_msg);
 
     // if the res failed everything was unstaked from the validator and on cw_multi_test rewards are then lost
     // hence, we mint the contract the rewards instead
-    if collect_rewards_res.is_err() {
+    if collect_rewards_res.is_err() && rewards > 0 {
         app.sudo(cw_multi_test::SudoMsg::Bank(
             cw_multi_test::BankSudo::Mint {
                 to_address: contract_addr.to_string(),
@@ -357,14 +407,19 @@ pub fn set_up_test_allocation(
     amount: u128,
 ) {
     mint_inj(app, user, amount);
-    whitelist_user(app, contract_addr, owner, user);
+
+    let is_whitelisted = is_user_whitelisted(app, user, contract_addr);
+    if !is_whitelisted {
+        whitelist_user(app, contract_addr, owner, user);
+    }
+
     stake(app, user, contract_addr, amount).unwrap();
 
     // call TestAllocate to bypass the min allocation check
     let cosmos_msg = WasmMsg::Execute {
         contract_addr: contract_addr.to_string(),
         msg: to_json_binary(&ExecuteMsg::TestAllocate {
-            recipient: recipient.clone(),
+            recipient: recipient.to_string(),
             amount: amount.into(),
         })
         .unwrap(),
@@ -382,7 +437,7 @@ pub fn allocate(
     recipient: &Addr,
 ) -> Result<AppResponse, AnyError> {
     let msg = ExecuteMsg::Allocate {
-        recipient: recipient.clone(),
+        recipient: recipient.to_string(),
         amount: amount.into(),
     };
 
@@ -402,7 +457,7 @@ pub fn deallocate(
     recipient: &Addr,
 ) -> Result<AppResponse, AnyError> {
     let msg = ExecuteMsg::Deallocate {
-        recipient: recipient.clone(),
+        recipient: recipient.to_string(),
         amount: amount.into(),
     };
 
@@ -431,7 +486,9 @@ pub fn enable_validator(
     contract_addr: &Addr,
     validator: Addr,
 ) -> Result<AppResponse, AnyError> {
-    let msg = ExecuteMsg::EnableValidator { validator };
+    let msg = ExecuteMsg::EnableValidator {
+        validator: validator.to_string(),
+    };
 
     let cosmos_msg = WasmMsg::Execute {
         contract_addr: contract_addr.to_string(),
@@ -447,7 +504,9 @@ pub fn disable_validator(
     contract_addr: &Addr,
     validator: Addr,
 ) -> Result<AppResponse, AnyError> {
-    let msg = ExecuteMsg::DisableValidator { validator };
+    let msg = ExecuteMsg::DisableValidator {
+        validator: validator.to_string(),
+    };
 
     let cosmos_msg = WasmMsg::Execute {
         contract_addr: contract_addr.to_string(),
@@ -471,7 +530,7 @@ pub fn query_is_agent(app: &App, agent: &Addr, contract: &Addr) -> bool {
         .query_wasm_smart(
             contract,
             &QueryMsg::IsAgent {
-                agent: agent.clone(),
+                agent: agent.to_string(),
             },
         )
         .unwrap();
@@ -483,7 +542,9 @@ pub fn claimable_amount(app: &App, user: &Addr, contract: &Addr) -> Uint128 {
         .wrap()
         .query_wasm_smart(
             contract,
-            &QueryMsg::GetClaimableAmount { user: user.clone() },
+            &QueryMsg::GetClaimableAmount {
+                user: user.to_string(),
+            },
         )
         .unwrap();
     claimable_amount_response.claimable_amount
@@ -501,7 +562,7 @@ pub fn add_agent(app: &mut App, staker_contract: &Addr, owner: &Addr, new_agent:
         wasm_execute_msg(
             staker_contract,
             &ExecuteMsg::AddAgent {
-                agent: new_agent.clone(),
+                agent: new_agent.to_string(),
             },
         )
         .into(),
@@ -514,7 +575,9 @@ pub fn whitelist_user(app: &mut App, contract: &Addr, agent: &Addr, user: &Addr)
         agent.clone(),
         wasm_execute_msg(
             contract,
-            &ExecuteMsg::AddUserToWhitelist { user: user.clone() },
+            &ExecuteMsg::AddUserToWhitelist {
+                user: user.to_string(),
+            },
         )
         .into(),
     );
@@ -526,7 +589,9 @@ pub fn blacklist_user(app: &mut App, contract: &Addr, agent: &Addr, user: &Addr)
         agent.clone(),
         wasm_execute_msg(
             contract,
-            &ExecuteMsg::AddUserToBlacklist { user: user.clone() },
+            &ExecuteMsg::AddUserToBlacklist {
+                user: user.to_string(),
+            },
         )
         .into(),
     );
@@ -538,7 +603,9 @@ pub fn clear_whitelist_status(app: &mut App, staker_addr: &Addr, agent: &Addr, u
         agent.clone(),
         wasm_execute_msg(
             staker_addr,
-            &ExecuteMsg::ClearUserStatus { user: user.clone() },
+            &ExecuteMsg::ClearUserStatus {
+                user: user.to_string(),
+            },
         )
         .into(),
     );
@@ -561,10 +628,43 @@ pub fn unpause(app: &mut App, contract: &Addr, owner: &Addr) {
     assert!(response.is_ok());
 }
 
+pub fn distribute_rewards(
+    app: &mut App,
+    staker_addr: &Addr,
+    distributor: &Addr,
+    recipient: &Addr,
+    in_inj: bool,
+    inj_amount: Option<u128>,
+) {
+    let coins_attached = inj_amount
+        .map(|amount| vec![coin(amount, INJ)])
+        .unwrap_or_default();
+    let dist_res = app.execute(
+        distributor.clone(),
+        WasmMsg::Execute {
+            contract_addr: staker_addr.to_string(),
+            msg: to_json_binary(&ExecuteMsg::DistributeRewards {
+                recipient: recipient.to_string(),
+                in_inj,
+            })
+            .unwrap(),
+            funds: coins_attached,
+        }
+        .into(),
+    );
+
+    assert!(dist_res.is_ok());
+}
+
 pub fn is_user_whitelisted(app: &App, user: &Addr, contract: &Addr) -> bool {
     let response: GetIsWhitelistedResponse = app
         .wrap()
-        .query_wasm_smart(contract, &QueryMsg::IsWhitelisted { user: user.clone() })
+        .query_wasm_smart(
+            contract,
+            &QueryMsg::IsWhitelisted {
+                user: user.to_string(),
+            },
+        )
         .unwrap();
     response.is_whitelisted
 }
@@ -572,7 +672,12 @@ pub fn is_user_whitelisted(app: &App, user: &Addr, contract: &Addr) -> bool {
 pub fn is_user_blacklisted(app: &App, user: &Addr, contract: &Addr) -> bool {
     let response: GetIsBlacklistedResponse = app
         .wrap()
-        .query_wasm_smart(contract, &QueryMsg::IsBlacklisted { user: user.clone() })
+        .query_wasm_smart(
+            contract,
+            &QueryMsg::IsBlacklisted {
+                user: user.to_string(),
+            },
+        )
         .unwrap();
     response.is_blacklisted
 }
@@ -582,7 +687,9 @@ pub fn query_user_status(app: &App, user: &Addr, contract: &Addr) -> UserStatus 
         .wrap()
         .query_wasm_smart(
             contract,
-            &QueryMsg::GetCurrentUserStatus { user: user.clone() },
+            &QueryMsg::GetCurrentUserStatus {
+                user: user.to_string(),
+            },
         )
         .unwrap();
     response.user_status
@@ -592,6 +699,15 @@ pub fn assert_error(response: Result<AppResponse, AnyError>, expected_error_msg:
     let error = response.unwrap_err();
     let error_source = error.source().unwrap();
     assert_eq!(error_source.to_string(), expected_error_msg);
+}
+
+pub fn find_event_for_recipient<'a>(events: &'a [Event], recipient: &'a Addr) -> Option<&'a Event> {
+    events.iter().find(|event| {
+        event
+            .attributes
+            .iter()
+            .any(|attr| attr.key == "recipient" && attr.value == recipient.to_string())
+    })
 }
 
 pub fn assert_event_with_attributes(
@@ -619,6 +735,43 @@ pub fn assert_event_with_attributes(
     assert_eq!(emitted_event.attributes, expected_attributes_with_address);
 }
 
+pub fn assert_event<F>(
+    events: &[Event],
+    expected_event_name: &str,
+    predicate: F,
+    expected_attributes: Vec<Attribute>,
+    contract_address: Addr,
+) where
+    F: Fn(&Event) -> bool,
+{
+    let filtered_events: Vec<&Event> = events
+        .iter()
+        .filter(|event: &&_| event.ty == expected_event_name)
+        .filter(|&event| predicate(event))
+        .collect();
+
+    assert_eq!(
+        filtered_events.len(),
+        1,
+        "Expected exactly one event to match the predicate"
+    );
+
+    let emitted_event = filtered_events[0];
+
+    // assert the event name
+    assert_eq!(emitted_event.ty, expected_event_name);
+
+    // add the _contract_address attribute that is always present
+    let mut expected_attributes_with_address = vec![Attribute {
+        key: "_contract_address".to_string(),
+        value: contract_address.to_string(),
+    }];
+    expected_attributes_with_address.extend(expected_attributes);
+
+    // assert the attributes
+    assert_eq!(emitted_event.attributes, expected_attributes_with_address);
+}
+
 pub fn get_total_staked(app: &App, contract_addr: &Addr) -> Uint128 {
     let total_staked: GetTotalStakedResponse = app
         .wrap()
@@ -632,7 +785,9 @@ pub fn get_allocations(app: &App, contract_addr: &Addr, user: &Addr) -> Vec<Allo
         .wrap()
         .query_wasm_smart(
             contract_addr.clone(),
-            &QueryMsg::GetAllocations { user: user.clone() },
+            &QueryMsg::GetAllocations {
+                user: user.to_string(),
+            },
         )
         .unwrap();
     allocations.allocations
@@ -647,7 +802,9 @@ pub fn get_total_allocated(
         .wrap()
         .query_wasm_smart(
             contract_addr.clone(),
-            &QueryMsg::GetTotalAllocated { user: user.clone() },
+            &QueryMsg::GetTotalAllocated {
+                user: user.to_string(),
+            },
         )
         .unwrap();
     (
@@ -691,7 +848,9 @@ pub fn get_claimable_assets(app: &App, contract_addr: &Addr, user: &Addr) -> Vec
         .wrap()
         .query_wasm_smart(
             contract_addr,
-            &QueryMsg::GetClaimableAssets { user: user.clone() },
+            &QueryMsg::GetClaimableAssets {
+                user: user.to_string(),
+            },
         )
         .unwrap();
     response.claims
@@ -725,7 +884,9 @@ pub fn get_max_withdraw(app: &App, staker_addr: &Addr, user: &Addr) -> u128 {
         .wrap()
         .query_wasm_smart(
             staker_addr.clone(),
-            &QueryMsg::GetMaxWithdraw { user: user.clone() },
+            &QueryMsg::GetMaxWithdraw {
+                user: user.to_string(),
+            },
         )
         .unwrap();
     response.max_withdraw.u128()
@@ -742,8 +903,8 @@ pub fn get_distribution_amounts(
         .query_wasm_smart(
             staker_addr.clone(),
             &QueryMsg::GetDistributionAmounts {
-                distributor: distributor.clone(),
-                recipient: recipient.cloned(),
+                distributor: distributor.to_string(),
+                recipient: recipient.map(|a| a.to_string()),
             },
         )
         .unwrap();
@@ -769,7 +930,7 @@ pub fn set_min_deposit_for_test_overflow(
 ) {
     let msg = WasmMsg::Execute {
         contract_addr,
-        msg: to_json_binary(&ExecuteMsg::SetMinimumDeposit {
+        msg: to_json_binary(&ExecuteMsg::TestSetMinimumDeposit {
             new_min_deposit: Uint128::new(min_deposit),
         })
         .unwrap(),
@@ -834,4 +995,55 @@ pub fn transfer_truinj(
     };
     let res = app.execute(sender.clone(), msg.into());
     assert!(res.is_ok());
+}
+
+// a mock contract that can receive cw20 tokens
+mod mock_cw20_receiver {
+
+    use cosmwasm_schema::cw_serde;
+    use cosmwasm_std::{Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult};
+    use cw20::Cw20ReceiveMsg;
+    use cw20_base::ContractError;
+    use injective_staker::msg::QueryMsg;
+
+    #[cw_serde]
+    pub struct InstantiateMsg {}
+
+    #[cw_serde]
+    pub enum ExecuteMsg {
+        Receive(Cw20ReceiveMsg),
+    }
+
+    pub fn instantiate(
+        _deps: DepsMut,
+        _env: Env,
+        _info: MessageInfo,
+        _msg: InstantiateMsg,
+    ) -> StdResult<Response> {
+        Ok(Response::new())
+    }
+
+    pub fn query(_: Deps, _: Env, _: QueryMsg) -> StdResult<Binary> {
+        Ok(Binary::default())
+    }
+
+    pub fn execute(
+        deps: DepsMut,
+        env: Env,
+        info: MessageInfo,
+        msg: ExecuteMsg,
+    ) -> Result<Response, ContractError> {
+        match msg {
+            ExecuteMsg::Receive(receive_msg) => Ok(execute_receive(deps, env, info, receive_msg)?),
+        }
+    }
+
+    fn execute_receive(
+        _deps: DepsMut,
+        _env: Env,
+        _info: MessageInfo,
+        _: Cw20ReceiveMsg,
+    ) -> StdResult<Response> {
+        Ok(Response::new())
+    }
 }

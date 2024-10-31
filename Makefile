@@ -35,8 +35,8 @@ check-format:
 	cargo fmt --check
 	cargo clippy --all-features --workspace --tests -- --warn clippy::all --warn clippy::nursery
 
-check-coverage:
-	cargo tarpaulin --out Html --output-dir coverage-report
+check-coverage: test
+	DYLD_LIBRARY_PATH="`pwd`/target/debug/deps" cargo tarpaulin --all-features --skip-clean --out Html --output-dir coverage-report
 
 clean:
 	cargo clean

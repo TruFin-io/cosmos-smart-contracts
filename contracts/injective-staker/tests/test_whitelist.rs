@@ -22,7 +22,7 @@ mod whitelist {
         let (app, staker_contract, _) = instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         // verify that the owner is an agent
-        let is_agent = query_is_agent(&app, &owner, &staker_contract.addr());
+        let is_agent = query_is_agent(&app, &owner, &staker_contract);
         assert!(is_agent);
     }
 
@@ -38,9 +38,9 @@ mod whitelist {
 
         // execute add agent
         let msg = wasm_execute_msg(
-            &staker_contract.addr(),
+            &staker_contract,
             &ExecuteMsg::AddAgent {
-                agent: new_agent.clone(),
+                agent: new_agent.to_string(),
             },
         );
 
@@ -48,7 +48,7 @@ mod whitelist {
         assert!(response.is_ok());
 
         // verify that the new agent was added
-        let is_agent = query_is_agent(&app, &new_agent, &staker_contract.addr());
+        let is_agent = query_is_agent(&app, &new_agent, &staker_contract);
         assert!(is_agent);
     }
 
@@ -62,9 +62,9 @@ mod whitelist {
 
         // execute add agent
         let msg = wasm_execute_msg(
-            &staker_contract.addr(),
+            &staker_contract,
             &ExecuteMsg::AddAgent {
-                agent: new_agent.clone(),
+                agent: new_agent.to_string(),
             },
         );
 
@@ -82,9 +82,9 @@ mod whitelist {
 
         // execute add agent
         let msg = wasm_execute_msg(
-            &staker_contract.addr(),
+            &staker_contract,
             &ExecuteMsg::AddAgent {
-                agent: new_agent.clone(),
+                agent: new_agent.to_string(),
             },
         );
 
@@ -96,7 +96,7 @@ mod whitelist {
             &response.unwrap().events,
             "wasm-agent_added",
             vec![("new_agent", new_agent.to_string()).into()],
-            staker_contract.addr(),
+            staker_contract,
         );
     }
 
@@ -110,8 +110,10 @@ mod whitelist {
 
         // execute add agent
         let msg = wasm_execute_msg(
-            &staker_contract.addr(),
-            &ExecuteMsg::AddAgent { agent: new_agent },
+            &staker_contract,
+            &ExecuteMsg::AddAgent {
+                agent: new_agent.to_string(),
+            },
         );
 
         let response = app.execute(user, msg.into());
@@ -129,9 +131,9 @@ mod whitelist {
 
         // execute add agent
         let msg = wasm_execute_msg(
-            &staker_contract.addr(),
+            &staker_contract,
             &ExecuteMsg::AddAgent {
-                agent: owner.clone(),
+                agent: owner.to_string(),
             },
         );
 
@@ -152,8 +154,10 @@ mod whitelist {
 
         // add the Agent
         let msg = wasm_execute_msg(
-            &staker_contract.addr(),
-            &ExecuteMsg::AddAgent { agent: new_agent },
+            &staker_contract,
+            &ExecuteMsg::AddAgent {
+                agent: new_agent.to_string(),
+            },
         );
 
         let _ = app.execute(owner.clone(), msg.clone().into());
@@ -178,13 +182,13 @@ mod whitelist {
             instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         // add an agent
-        add_agent(&mut app, &staker_contract.addr(), &owner, &agent);
+        add_agent(&mut app, &staker_contract, &owner, &agent);
 
         // execute remove agent
         let msg = wasm_execute_msg(
-            &staker_contract.addr(),
+            &staker_contract,
             &ExecuteMsg::RemoveAgent {
-                agent: agent.clone(),
+                agent: agent.to_string(),
             },
         );
 
@@ -192,7 +196,7 @@ mod whitelist {
         assert!(response.is_ok());
 
         // verify that the new agent was removed
-        let is_agent = query_is_agent(&app, &agent, &staker_contract.addr());
+        let is_agent = query_is_agent(&app, &agent, &staker_contract);
         assert!(!is_agent);
     }
 
@@ -205,13 +209,13 @@ mod whitelist {
             instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         // add an agent
-        add_agent(&mut app, &staker_contract.addr(), &owner, &agent);
+        add_agent(&mut app, &staker_contract, &owner, &agent);
 
         // execute remove agent
         let msg = wasm_execute_msg(
-            &staker_contract.addr(),
+            &staker_contract,
             &ExecuteMsg::RemoveAgent {
-                agent: agent.clone(),
+                agent: agent.to_string(),
             },
         );
 
@@ -223,7 +227,7 @@ mod whitelist {
             &response.unwrap().events,
             "wasm-agent_removed",
             vec![("removed_agent", agent.to_string()).into()],
-            staker_contract.addr(),
+            staker_contract,
         );
     }
 
@@ -237,13 +241,13 @@ mod whitelist {
             instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         // add an agent
-        add_agent(&mut app, &staker_contract.addr(), &owner, &agent);
+        add_agent(&mut app, &staker_contract, &owner, &agent);
 
         // execute remove agent
         let msg = wasm_execute_msg(
-            &staker_contract.addr(),
+            &staker_contract,
             &ExecuteMsg::RemoveAgent {
-                agent: agent.clone(),
+                agent: agent.to_string(),
             },
         );
 
@@ -262,9 +266,9 @@ mod whitelist {
 
         // execute remove agent
         let msg = wasm_execute_msg(
-            &staker_contract.addr(),
+            &staker_contract,
             &ExecuteMsg::RemoveAgent {
-                agent: owner.clone(),
+                agent: owner.to_string(),
             },
         );
 
@@ -284,8 +288,10 @@ mod whitelist {
 
         // execute remove agent
         let msg = wasm_execute_msg(
-            &staker_contract.addr(),
-            &ExecuteMsg::RemoveAgent { agent: non_agent },
+            &staker_contract,
+            &ExecuteMsg::RemoveAgent {
+                agent: non_agent.to_string(),
+            },
         );
 
         let response = app.execute(owner, msg.into());
@@ -304,22 +310,24 @@ mod whitelist {
         let (mut app, staker_contract, _) =
             instantiate_staker(owner.clone(), "treasury".into_bech32());
 
-        add_agent(&mut app, &staker_contract.addr(), &owner, &agent);
+        add_agent(&mut app, &staker_contract, &owner, &agent);
 
         // add the user to the whitelist
         let user: Addr = "user".into_bech32();
         let response = app.execute(
             agent,
             wasm_execute_msg(
-                &staker_contract.addr(),
-                &ExecuteMsg::AddUserToWhitelist { user: user.clone() },
+                &staker_contract,
+                &ExecuteMsg::AddUserToWhitelist {
+                    user: user.to_string(),
+                },
             )
             .into(),
         );
         assert!(response.is_ok());
 
         // verify that the user was whitelisted
-        let is_whitelisted = is_user_whitelisted(&app, &user, &staker_contract.addr());
+        let is_whitelisted = is_user_whitelisted(&app, &user, &staker_contract);
         assert!(is_whitelisted);
     }
 
@@ -330,15 +338,17 @@ mod whitelist {
         let (mut app, staker_contract, _) =
             instantiate_staker(owner.clone(), "treasury".into_bech32());
 
-        add_agent(&mut app, &staker_contract.addr(), &owner, &agent);
+        add_agent(&mut app, &staker_contract, &owner, &agent);
 
         // add the user to the whitelist
         let user: Addr = Addr::unchecked("user");
         let response = app.execute(
             agent,
             wasm_execute_msg(
-                &staker_contract.addr(),
-                &ExecuteMsg::AddUserToWhitelist { user: user.clone() },
+                &staker_contract,
+                &ExecuteMsg::AddUserToWhitelist {
+                    user: user.to_string(),
+                },
             )
             .into(),
         );
@@ -352,15 +362,17 @@ mod whitelist {
         let (mut app, staker_contract, _) =
             instantiate_staker(owner.clone(), "treasury".into_bech32());
 
-        add_agent(&mut app, &staker_contract.addr(), &owner, &agent);
+        add_agent(&mut app, &staker_contract, &owner, &agent);
 
         // add the user to the whitelist
         let user: Addr = "user".into_bech32();
         let response = app.execute(
             agent,
             wasm_execute_msg(
-                &staker_contract.addr(),
-                &ExecuteMsg::AddUserToWhitelist { user: user.clone() },
+                &staker_contract,
+                &ExecuteMsg::AddUserToWhitelist {
+                    user: user.to_string(),
+                },
             )
             .into(),
         );
@@ -375,7 +387,7 @@ mod whitelist {
                 ("old_status", "no_status").into(),
                 ("new_status", "whitelisted").into(),
             ],
-            staker_contract.addr(),
+            staker_contract,
         );
     }
 
@@ -390,8 +402,10 @@ mod whitelist {
         let response = app.execute(
             non_agent,
             wasm_execute_msg(
-                &staker_contract.addr(),
-                &ExecuteMsg::AddUserToWhitelist { user: user.clone() },
+                &staker_contract,
+                &ExecuteMsg::AddUserToWhitelist {
+                    user: user.to_string(),
+                },
             )
             .into(),
         );
@@ -401,7 +415,7 @@ mod whitelist {
         assert_error(response, "Caller is not an agent");
 
         // verify that the user was not whitelisted
-        let is_whitelisted = is_user_whitelisted(&app, &user, &staker_contract.addr());
+        let is_whitelisted = is_user_whitelisted(&app, &user, &staker_contract);
         assert!(!is_whitelisted);
     }
 
@@ -413,17 +427,19 @@ mod whitelist {
         let (mut app, staker_contract, _) =
             instantiate_staker(owner.clone(), "treasury".into_bech32());
 
-        add_agent(&mut app, &staker_contract.addr(), &owner, &agent);
+        add_agent(&mut app, &staker_contract, &owner, &agent);
 
         // add the user to the whitelist
-        whitelist_user(&mut app, &staker_contract.addr(), &agent, &user);
+        whitelist_user(&mut app, &staker_contract, &agent, &user);
 
         // add the user to the whitelist again
         let response = app.execute(
             agent,
             wasm_execute_msg(
-                &staker_contract.addr(),
-                &ExecuteMsg::AddUserToWhitelist { user: user.clone() },
+                &staker_contract,
+                &ExecuteMsg::AddUserToWhitelist {
+                    user: user.to_string(),
+                },
             )
             .into(),
         );
@@ -444,21 +460,23 @@ mod whitelist {
         let (mut app, staker_contract, _) =
             instantiate_staker(owner.clone(), "treasury".into_bech32());
 
-        add_agent(&mut app, &staker_contract.addr(), &owner, &agent);
+        add_agent(&mut app, &staker_contract, &owner, &agent);
 
         // add the user to the blacklist
         let response = app.execute(
             agent,
             wasm_execute_msg(
-                &staker_contract.addr(),
-                &ExecuteMsg::AddUserToBlacklist { user: user.clone() },
+                &staker_contract,
+                &ExecuteMsg::AddUserToBlacklist {
+                    user: user.to_string(),
+                },
             )
             .into(),
         );
         assert!(response.is_ok());
 
         // verify that the user was blacklisted
-        let is_wblacklisted = is_user_blacklisted(&app, &user, &staker_contract.addr());
+        let is_wblacklisted = is_user_blacklisted(&app, &user, &staker_contract);
         assert!(is_wblacklisted);
     }
 
@@ -471,14 +489,16 @@ mod whitelist {
         let (mut app, staker_contract, _) =
             instantiate_staker(owner.clone(), "treasury".into_bech32());
 
-        add_agent(&mut app, &staker_contract.addr(), &owner, &agent);
+        add_agent(&mut app, &staker_contract, &owner, &agent);
 
         // add the user to the blacklist
         let response = app.execute(
             agent,
             wasm_execute_msg(
-                &staker_contract.addr(),
-                &ExecuteMsg::AddUserToBlacklist { user: user.clone() },
+                &staker_contract,
+                &ExecuteMsg::AddUserToBlacklist {
+                    user: user.to_string(),
+                },
             )
             .into(),
         );
@@ -493,7 +513,7 @@ mod whitelist {
                 ("old_status", "no_status").into(),
                 ("new_status", "blacklisted").into(),
             ],
-            staker_contract.addr(),
+            staker_contract,
         );
     }
 
@@ -504,15 +524,17 @@ mod whitelist {
         let (mut app, staker_contract, _) =
             instantiate_staker(owner.clone(), "treasury".into_bech32());
 
-        add_agent(&mut app, &staker_contract.addr(), &owner, &agent);
+        add_agent(&mut app, &staker_contract, &owner, &agent);
 
         // add the user to the blacklist
         let user: Addr = Addr::unchecked("user");
         let response = app.execute(
             agent,
             wasm_execute_msg(
-                &staker_contract.addr(),
-                &ExecuteMsg::AddUserToBlacklist { user: user.clone() },
+                &staker_contract,
+                &ExecuteMsg::AddUserToBlacklist {
+                    user: user.to_string(),
+                },
             )
             .into(),
         );
@@ -527,24 +549,26 @@ mod whitelist {
         let (mut app, staker_contract, _) =
             instantiate_staker(owner.clone(), "treasury".into_bech32());
 
-        add_agent(&mut app, &staker_contract.addr(), &owner, &agent);
+        add_agent(&mut app, &staker_contract, &owner, &agent);
 
         // add the user to the whitelist
-        whitelist_user(&mut app, &staker_contract.addr(), &agent, &user);
+        whitelist_user(&mut app, &staker_contract, &agent, &user);
 
         // add the user to the blacklist
         let response = app.execute(
             agent,
             wasm_execute_msg(
-                &staker_contract.addr(),
-                &ExecuteMsg::AddUserToBlacklist { user: user.clone() },
+                &staker_contract,
+                &ExecuteMsg::AddUserToBlacklist {
+                    user: user.to_string(),
+                },
             )
             .into(),
         );
         assert!(response.is_ok());
 
         // verify that the user was removed from the whitelist
-        let is_whitelisted = is_user_whitelisted(&app, &user, &staker_contract.addr());
+        let is_whitelisted = is_user_whitelisted(&app, &user, &staker_contract);
         assert!(!is_whitelisted);
     }
 
@@ -559,8 +583,10 @@ mod whitelist {
         let response = app.execute(
             non_agent,
             wasm_execute_msg(
-                &staker_contract.addr(),
-                &ExecuteMsg::AddUserToBlacklist { user: user.clone() },
+                &staker_contract,
+                &ExecuteMsg::AddUserToBlacklist {
+                    user: user.to_string(),
+                },
             )
             .into(),
         );
@@ -570,7 +596,7 @@ mod whitelist {
         assert_error(response, "Caller is not an agent");
 
         // verify that the user was not blacklisted
-        let is_blacklisted = is_user_blacklisted(&app, &user, &staker_contract.addr());
+        let is_blacklisted = is_user_blacklisted(&app, &user, &staker_contract);
         assert!(!is_blacklisted);
     }
 
@@ -582,17 +608,19 @@ mod whitelist {
         let (mut app, staker_contract, _) =
             instantiate_staker(owner.clone(), "treasury".into_bech32());
 
-        add_agent(&mut app, &staker_contract.addr(), &owner, &agent);
+        add_agent(&mut app, &staker_contract, &owner, &agent);
 
         // add the user to the blacklist
-        blacklist_user(&mut app, &staker_contract.addr(), &agent, &user);
+        blacklist_user(&mut app, &staker_contract, &agent, &user);
 
         // add the user to the blacklist again
         let response = app.execute(
             agent,
             wasm_execute_msg(
-                &staker_contract.addr(),
-                &ExecuteMsg::AddUserToBlacklist { user: user.clone() },
+                &staker_contract,
+                &ExecuteMsg::AddUserToBlacklist {
+                    user: user.to_string(),
+                },
             )
             .into(),
         );
@@ -613,22 +641,24 @@ mod whitelist {
         let (mut app, staker_contract, _) =
             instantiate_staker(owner.clone(), "treasury".into_bech32());
 
-        add_agent(&mut app, &staker_contract.addr(), &owner, &agent);
-        whitelist_user(&mut app, &staker_contract.addr(), &owner, &user);
+        add_agent(&mut app, &staker_contract, &owner, &agent);
+        whitelist_user(&mut app, &staker_contract, &owner, &user);
 
         // clear the user whitelist status
         let response = app.execute(
             agent,
             wasm_execute_msg(
-                &staker_contract.addr(),
-                &ExecuteMsg::ClearUserStatus { user: user.clone() },
+                &staker_contract,
+                &ExecuteMsg::ClearUserStatus {
+                    user: user.to_string(),
+                },
             )
             .into(),
         );
         assert!(response.is_ok());
 
         // verify that the user status was cleared
-        let user_status = query_user_status(&app, &user, &staker_contract.addr());
+        let user_status = query_user_status(&app, &user, &staker_contract);
         assert_eq!(user_status, UserStatus::NoStatus);
         assert_eq!(user_status.to_string(), "no_status");
     }
@@ -643,15 +673,17 @@ mod whitelist {
             instantiate_staker(owner.clone(), "treasury".into_bech32());
 
         // whitelist the user
-        add_agent(&mut app, &staker_contract.addr(), &owner, &agent);
-        whitelist_user(&mut app, &staker_contract.addr(), &owner, &user);
+        add_agent(&mut app, &staker_contract, &owner, &agent);
+        whitelist_user(&mut app, &staker_contract, &owner, &user);
 
         // clear the user whitelist status
         let response = app.execute(
             agent,
             wasm_execute_msg(
-                &staker_contract.addr(),
-                &ExecuteMsg::ClearUserStatus { user: user.clone() },
+                &staker_contract,
+                &ExecuteMsg::ClearUserStatus {
+                    user: user.to_string(),
+                },
             )
             .into(),
         );
@@ -666,7 +698,7 @@ mod whitelist {
                 ("old_status", "whitelisted").into(),
                 ("new_status", "no_status").into(),
             ],
-            staker_contract.addr(),
+            staker_contract,
         );
     }
 
@@ -679,14 +711,16 @@ mod whitelist {
         let (mut app, staker_contract, _) =
             instantiate_staker(owner.clone(), "treasury".into_bech32());
 
-        whitelist_user(&mut app, &staker_contract.addr(), &owner, &user);
+        whitelist_user(&mut app, &staker_contract, &owner, &user);
 
         // clear the user whitelist status
         let response = app.execute(
             non_agent,
             wasm_execute_msg(
-                &staker_contract.addr(),
-                &ExecuteMsg::ClearUserStatus { user: user.clone() },
+                &staker_contract,
+                &ExecuteMsg::ClearUserStatus {
+                    user: user.to_string(),
+                },
             )
             .into(),
         );
@@ -708,8 +742,10 @@ mod whitelist {
         let response = app.execute(
             owner,
             wasm_execute_msg(
-                &staker_contract.addr(),
-                &ExecuteMsg::ClearUserStatus { user },
+                &staker_contract,
+                &ExecuteMsg::ClearUserStatus {
+                    user: user.to_string(),
+                },
             )
             .into(),
         );

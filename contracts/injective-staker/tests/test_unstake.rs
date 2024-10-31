@@ -6,12 +6,15 @@ mod unstake {
     use cosmwasm_std::{assert_approx_eq, to_json_binary, Addr, Uint128, WasmMsg};
     use cw_multi_test::{Executor, IntoBech32};
     use helpers::{mint_inj, stake};
-    use injective_staker::{msg::ExecuteMsg, FEE_PRECISION, ONE_INJ, SHARE_PRICE_SCALING_FACTOR};
+    use injective_staker::{
+        msg::ExecuteMsg, state::GetValueTrait, FEE_PRECISION, ONE_INJ, SHARE_PRICE_SCALING_FACTOR,
+        UNBONDING_PERIOD,
+    };
 
     use crate::helpers::{
-        self, add_validator, add_validator_to_app, assert_error, assert_event_with_attributes,
-        clear_whitelist_status, get_claimable_assets, get_max_withdraw, get_share_price,
-        get_total_rewards, get_total_staked, instantiate_staker_with_min_deposit,
+        self, add_validator, assert_error, assert_event_with_attributes, clear_whitelist_status,
+        get_claimable_assets, get_max_withdraw, get_share_price, get_total_rewards,
+        get_total_staked, instantiate_staker_with_min_deposit,
         instantiate_staker_with_min_deposit_and_initial_stake, move_days_forward, pause,
         query_inj_balance, query_truinj_balance, query_truinj_supply, set_fee,
         stake_to_specific_validator, stake_when_rewards_accrued, unstake,
@@ -47,9 +50,9 @@ mod unstake {
         let pre_rewards = get_total_rewards(&app, &staker_addr).u128();
         assert!(pre_rewards > 0);
 
-        // verify there are no assets in the staker
+        // verify there are no assets in the staker apart from the reserve amount
         let pre_staker_asset_balance = query_inj_balance(&app, &staker_addr);
-        assert_eq!(pre_staker_asset_balance, 0);
+        assert_eq!(pre_staker_asset_balance, 1);
 
         let pre_total_staked = get_total_staked(&app, &staker_addr).u128();
         let pre_share_price = get_share_price(&app, &staker_addr);
@@ -88,13 +91,15 @@ mod unstake {
         let total_supply = query_truinj_supply(&app, &staker_addr);
         assert_eq!(total_supply, pre_total_supply - expected_shares_burned);
 
-        // verify the assets in the staker is now the reward amount
+        // verify the assets in the staker is now the reward amount + reserve amount
         let staker_asset_balance = query_inj_balance(&app, &staker_addr);
-        assert_eq!(staker_asset_balance, pre_rewards);
+        assert_eq!(staker_asset_balance, pre_rewards + 1);
 
         // verify that staking rewards are now 0
         let rewards = get_total_rewards(&app, &staker_addr).u128();
         assert_eq!(rewards, 0);
+
+        let expiration = UNBONDING_PERIOD.after(&app.block_info());
 
         // verify the unstaked event was emitted
         assert_event_with_attributes(
@@ -110,6 +115,7 @@ mod unstake {
                 ("treasury_balance", Uint128::zero()).into(),
                 ("total_staked", total_staked.to_string()).into(),
                 ("total_supply", total_supply.to_string()).into(),
+                ("expires_at", expiration.get_value().to_string()).into(),
             ],
             staker_addr,
         );
@@ -142,9 +148,9 @@ mod unstake {
         let pre_rewards = get_total_rewards(&app, &staker_addr).u128();
         assert!(pre_rewards > 0);
 
-        // verify there are no assets in the staker
+        // verify there are no assets in the staker apart from the reserve amount
         let pre_staker_asset_balance = query_inj_balance(&app, &staker_addr);
-        assert_eq!(pre_staker_asset_balance, 0);
+        assert_eq!(pre_staker_asset_balance, 1);
 
         let pre_total_staked = get_total_staked(&app, &staker_addr).u128();
 
@@ -180,9 +186,9 @@ mod unstake {
         let total_supply = query_truinj_supply(&app, &staker_addr);
         assert_eq!(total_supply, 0);
 
-        // verify the assets in the staker is now the reward amount
+        // verify the assets in the staker is now the reward amount + reserve amount
         let staker_asset_balance = query_inj_balance(&app, &staker_addr);
-        assert_eq!(staker_asset_balance, pre_rewards);
+        assert_eq!(staker_asset_balance, pre_rewards + 1);
 
         // verify that staking rewards are now 0
         let rewards = get_total_rewards(&app, &staker_addr).u128();
@@ -211,7 +217,6 @@ mod unstake {
 
         // add a second validator
         let second_validator: Addr = "second_validator".into_bech32();
-        add_validator_to_app(&mut app, second_validator.to_string());
         add_validator(
             &mut app,
             owner.clone(),
@@ -238,9 +243,9 @@ mod unstake {
         let pre_rewards = get_total_rewards(&app, &staker_addr).u128();
         assert!(pre_rewards > 0);
 
-        // verify there are no assets in the staker
+        // verify there are no assets in the staker apart from the reserve amount
         let pre_staker_asset_balance = query_inj_balance(&app, &staker_addr);
-        assert_eq!(pre_staker_asset_balance, 0);
+        assert_eq!(pre_staker_asset_balance, 1);
 
         let pre_share_price: u128 = get_share_price(&app, &staker_addr);
 
@@ -273,21 +278,21 @@ mod unstake {
         let share_price = get_share_price(&app, &staker_addr);
         assert_approx_eq!(share_price, pre_share_price, "0.000001");
 
-        // verify the assets in the staker is now the reward amounts
+        // verify the assets in the staker is now the reward amounts + reserve amount
         let staker_asset_balance = query_inj_balance(&app, &staker_addr);
-        assert_eq!(staker_asset_balance, pre_rewards);
+        assert_eq!(staker_asset_balance, pre_rewards + 1);
 
         // verify that staking rewards are now 0
         let rewards = get_total_rewards(&app, &staker_addr).u128();
         assert_eq!(rewards, 0);
 
-        // stake so that rewards are sweeped
+        // stake so that rewards are swept
         stake(&mut app, &bob, &staker_addr, stake_amount).unwrap();
 
-        // verify that the unstaked rewards are not sweeped
+        // verify that the unstaked rewards are not swept
         let unstaked_rewards = pre_rewards / 2; // alice had half the rewards
         let staker_asset_balance = query_inj_balance(&app, &staker_addr);
-        assert_eq!(staker_asset_balance, unstaked_rewards);
+        assert_eq!(staker_asset_balance, unstaked_rewards + 1); // must add the reserve amount
     }
 
     #[test]
@@ -443,6 +448,8 @@ mod unstake {
 
         let total_staked = get_total_staked(&app, &staker_addr).u128();
 
+        let expiration = UNBONDING_PERIOD.after(&app.block_info());
+
         // verify the unstaked event was emitted
         assert_event_with_attributes(
             &unstake_res.unwrap().events,
@@ -461,6 +468,7 @@ mod unstake {
                 ("treasury_balance", Uint128::from(expected_treasury_fees)).into(),
                 ("total_staked", total_staked.to_string()).into(),
                 ("total_supply", total_supply.to_string()).into(),
+                ("expires_at", expiration.get_value().to_string()).into(),
             ],
             staker_addr.clone(),
         );
@@ -626,7 +634,6 @@ mod unstake {
 
         // add a second validator
         let second_validator: Addr = "second-validator".into_bech32();
-        add_validator_to_app(&mut app, second_validator.to_string());
         add_validator(
             &mut app,
             owner.clone(),
@@ -695,6 +702,7 @@ mod unstake {
         let total_supply = query_truinj_supply(&app, &staker_addr);
         assert_eq!(total_supply, pre_total_supply - expected_shares_burned);
 
+        let expiration = UNBONDING_PERIOD.after(&app.block_info());
         // verify the unstaked event was emitted
         assert_event_with_attributes(
             &unstake_res.unwrap().events,
@@ -709,6 +717,7 @@ mod unstake {
                 ("treasury_balance", Uint128::zero()).into(),
                 ("total_staked", total_staked.to_string()).into(),
                 ("total_supply", total_supply.to_string()).into(),
+                ("expires_at", expiration.get_value().to_string()).into(),
             ],
             staker_addr,
         );
@@ -726,7 +735,6 @@ mod unstake {
 
         // add a second validator
         let second_validator: Addr = "second-validator".into_bech32();
-        add_validator_to_app(&mut app, second_validator.to_string());
         add_validator(
             &mut app,
             owner.clone(),
@@ -753,7 +761,7 @@ mod unstake {
             WasmMsg::Execute {
                 contract_addr: staker_addr.to_string(),
                 msg: to_json_binary(&ExecuteMsg::UnstakeFromSpecificValidator {
-                    validator_addr: second_validator.clone(),
+                    validator_addr: second_validator.to_string(),
                     amount: Uint128::from(10_000u128),
                 })
                 .unwrap(),
@@ -779,7 +787,6 @@ mod unstake {
 
         // add a second validator
         let second_validator: Addr = "second-validator".into_bech32();
-        add_validator_to_app(&mut app, second_validator.to_string());
         add_validator(
             &mut app,
             owner.clone(),
@@ -806,7 +813,7 @@ mod unstake {
             WasmMsg::Execute {
                 contract_addr: staker_addr.to_string(),
                 msg: to_json_binary(&ExecuteMsg::UnstakeFromSpecificValidator {
-                    validator_addr: second_validator.clone(),
+                    validator_addr: second_validator.to_string(),
                     amount: Uint128::from(10_000u128),
                 })
                 .unwrap(),
@@ -832,7 +839,6 @@ mod unstake {
 
         // add a second validator
         let second_validator: Addr = "second-validator".into_bech32();
-        add_validator_to_app(&mut app, second_validator.to_string());
         add_validator(
             &mut app,
             owner.clone(),
@@ -857,7 +863,7 @@ mod unstake {
             WasmMsg::Execute {
                 contract_addr: staker_addr.to_string(),
                 msg: to_json_binary(&ExecuteMsg::UnstakeFromSpecificValidator {
-                    validator_addr: second_validator,
+                    validator_addr: second_validator.to_string(),
                     amount: unstake_amount.into(),
                 })
                 .unwrap(),
@@ -897,7 +903,7 @@ mod unstake {
             WasmMsg::Execute {
                 contract_addr: staker_addr.to_string(),
                 msg: to_json_binary(&ExecuteMsg::UnstakeFromSpecificValidator {
-                    validator_addr: validator,
+                    validator_addr: validator.to_string(),
                     amount: Uint128::from(1000u128),
                 })
                 .unwrap(),
@@ -909,5 +915,53 @@ mod unstake {
         // verify that unstaking fails with the expected error
         assert!(unstake_res.is_err());
         assert_error(unstake_res, "Validator does not exist")
+    }
+
+    #[test]
+    fn test_unstake_max_withdraw_with_multiple_users() {
+        let owner = "owner".into_bech32();
+        let (mut app, staker_addr, validator_addr) =
+            instantiate_staker_with_min_deposit_and_initial_stake(
+                owner.clone(),
+                "treasury".into_bech32(),
+                0,
+                0,
+            );
+
+        let users = ["user0".into_bech32(), "user1".into_bech32()];
+
+        // all users stake some inj
+        let stake_amount = 10_000;
+        for user in users.iter() {
+            mint_inj(&mut app, user, stake_amount);
+            whitelist_user(&mut app, &staker_addr, &owner, user);
+            stake(&mut app, user, &staker_addr, stake_amount).unwrap();
+        }
+
+        // rewards accrue
+        move_days_forward(&mut app, 10);
+
+        // all users unstake their max_withdraw
+        for user in users.iter() {
+            let max_withdraw = get_max_withdraw(&app, &staker_addr, user);
+            unstake_when_rewards_accrue(
+                &mut app,
+                user,
+                &staker_addr,
+                max_withdraw,
+                &validator_addr,
+            )
+            .unwrap();
+            move_days_forward(&mut app, 1);
+        }
+
+        // verify all users max_withdraw is now zero
+        for user in users.iter() {
+            assert_eq!(get_max_withdraw(&app, &staker_addr, user), 0);
+        }
+
+        // verify the total staked and total rewards on the validator are now zero
+        assert_eq!(get_total_staked(&app, &staker_addr).u128(), 0);
+        assert_eq!(get_total_rewards(&app, &staker_addr).u128(), 0);
     }
 }
