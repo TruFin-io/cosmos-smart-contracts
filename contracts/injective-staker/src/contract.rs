@@ -621,7 +621,7 @@ pub mod execute {
             response = response.add_message(inj_transfer);
         }
 
-        // if there is a refund, tranfer the amount to the distributor
+        // if there is a refund, transfer the amount to the distributor
         if distribution_info.refund_amount > 0 {
             response = response.add_message(BankMsg::Send {
                 to_address: distributor.to_string(),
@@ -1720,32 +1720,35 @@ fn internal_unstake(
     let new_shares_supply = shares_supply + treasury_shares_minted.u128() - shares_to_burn;
 
     // send undelegate message and emit event
-    let res = Response::new()
-        .add_message(StakingMsg::Undelegate {
+    let mut res: Response = Response::new();
+
+    // check if any INJ needs to be unstaked
+    if actual_amount_to_unstake > 0 {
+        res = res.add_message(StakingMsg::Undelegate {
             validator: validator_addr.to_string(),
             amount: Coin {
                 denom: INJ.to_string(),
                 amount: actual_amount_to_unstake.into(),
             },
-        })
-        .add_event(
-            Event::new("unstaked")
-                .add_attribute("user", user_addr)
-                .add_attribute("amount", assets_to_unstake.to_string())
-                .add_attribute("validator_addr", validator_addr)
-                .add_attribute("user_balance", user_shares_balance)
-                .add_attribute("user_shares_burned", shares_to_burn.to_string())
-                .add_attribute("treasury_shares_minted", treasury_shares_minted.to_string())
-                .add_attribute(
-                    "treasury_balance",
-                    query_balance(deps.as_ref(), staker_info.treasury.into_string())?.balance,
-                )
-                .add_attribute("total_staked", new_total_staked.to_string())
-                .add_attribute("total_supply", new_shares_supply.to_string())
-                .add_attribute("expires_at", expiration.get_value().to_string()),
-        );
+        });
+    }
 
-    Ok(res)
+    Ok(res.add_event(
+        Event::new("unstaked")
+            .add_attribute("user", user_addr)
+            .add_attribute("amount", assets_to_unstake.to_string())
+            .add_attribute("validator_addr", validator_addr)
+            .add_attribute("user_balance", user_shares_balance)
+            .add_attribute("user_shares_burned", shares_to_burn.to_string())
+            .add_attribute("treasury_shares_minted", treasury_shares_minted.to_string())
+            .add_attribute(
+                "treasury_balance",
+                query_balance(deps.as_ref(), staker_info.treasury.into_string())?.balance,
+            )
+            .add_attribute("total_staked", new_total_staked.to_string())
+            .add_attribute("total_supply", new_shares_supply.to_string())
+            .add_attribute("expires_at", expiration.get_value().to_string()),
+    ))
 }
 
 /// Converts an amount of INJ tokens to the equivalent TruINJ amount.

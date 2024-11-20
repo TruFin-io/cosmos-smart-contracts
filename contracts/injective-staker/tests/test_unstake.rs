@@ -928,10 +928,18 @@ mod unstake {
                 0,
             );
 
-        let users = ["user0".into_bech32(), "user1".into_bech32()];
+        let users = [
+            "user0".into_bech32(),
+            "user1".into_bech32(),
+            "user2".into_bech32(),
+            "user3".into_bech32(),
+            "user4".into_bech32(),
+            "user5".into_bech32(),
+            "user6".into_bech32(),
+        ];
 
         // all users stake some inj
-        let stake_amount = 10_000;
+        let stake_amount = 100;
         for user in users.iter() {
             mint_inj(&mut app, user, stake_amount);
             whitelist_user(&mut app, &staker_addr, &owner, user);
@@ -939,20 +947,23 @@ mod unstake {
         }
 
         // rewards accrue
-        move_days_forward(&mut app, 10);
+        move_days_forward(&mut app, 2000);
 
         // all users unstake their max_withdraw
-        for user in users.iter() {
+        // when the last user unstakes, there is nothing left on the validator as all the rewards have already been withdrawn into the staker
+        let max_withdraw = get_max_withdraw(&app, &staker_addr, &users[0]);
+        unstake_when_rewards_accrue(
+            &mut app,
+            &users[0],
+            &staker_addr,
+            max_withdraw,
+            &validator_addr,
+        )
+        .unwrap();
+
+        for user in users[1..].iter() {
             let max_withdraw = get_max_withdraw(&app, &staker_addr, user);
-            unstake_when_rewards_accrue(
-                &mut app,
-                user,
-                &staker_addr,
-                max_withdraw,
-                &validator_addr,
-            )
-            .unwrap();
-            move_days_forward(&mut app, 1);
+            unstake(&mut app, user, &staker_addr, max_withdraw).unwrap();
         }
 
         // verify all users max_withdraw is now zero
