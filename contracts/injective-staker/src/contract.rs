@@ -1962,6 +1962,9 @@ fn mint_treasury_fees(
     share_price_num: Uint256,
     share_price_denom: Uint256,
 ) -> Result<Uint128, ContractError> {
+    if fee == 0 || rewards == 0 {
+        return Ok(Uint128::zero());
+    }
     // calculate the fees in TruINJ to mint to the treasury
     let fees = rewards * fee as u128 / FEE_PRECISION as u128;
     let treasury_shares_increase =
