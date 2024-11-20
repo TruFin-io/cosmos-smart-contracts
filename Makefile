@@ -4,7 +4,7 @@ build-staker:
 	rustup target add wasm32-unknown-unknown
 	RUSTFLAGS=$(RFLAGS) cargo build -p injective-staker
 
-test-staker: build-staker build-wasm
+test-staker: build-staker build-optimized
 	RUSTFLAGS=$(RFLAGS) RUST_TEST_THREADS=1 cargo test -p injective-staker --features test
 
 build: build-staker
@@ -13,23 +13,23 @@ build-debug:
 	cargo wasm-debug
 
 build-wasm:
-	mkdir -p ./contracts/injective-staker/tests/test_artifacts/
 	cd ./contracts/injective-staker && cargo wasm && cd ..
-	cp ./target/wasm32-unknown-unknown/release/injective_staker.wasm ./contracts/injective-staker/tests/test_artifacts/
 
 build-optimized:
+	mkdir -p ./contracts/injective-staker/tests/test_artifacts
 	docker run --platform linux/amd64 --rm -v ./:/code \
   --mount type=volume,source=src_cache,target=/target \
   --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry \
   cosmwasm/workspace-optimizer:0.16.0
+	cp artifacts/injective_staker.wasm ./contracts/injective-staker/tests/test_artifacts/
 
 test: test-staker
 
 schema:
 	cd contracts/injective-staker && cargo schema
 
-validate:
-	cosmwasm-check ./target/wasm32-unknown-unknown/release/injective_staker.wasm
+validate: build-optimized
+	cosmwasm-check artifacts/injective_staker.wasm
 
 check-format:
 	cargo fmt --check
