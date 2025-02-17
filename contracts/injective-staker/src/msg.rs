@@ -94,9 +94,6 @@ pub enum ExecuteMsg {
         recipient: String,
         in_inj: bool,
     },
-    DistributeAll {
-        in_inj: bool,
-    },
     // Internal messages
     Restake {
         amount: Uint128,

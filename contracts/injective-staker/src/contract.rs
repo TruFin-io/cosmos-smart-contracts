@@ -188,7 +188,6 @@ pub fn execute(
         ExecuteMsg::DistributeRewards { recipient, in_inj } => {
             execute::distribute_rewards(deps, env, info, &recipient, in_inj)
         }
-        ExecuteMsg::DistributeAll { in_inj } => execute::distribute_all(deps, env, info, in_inj),
         #[cfg(any(test, feature = "test"))]
         ExecuteMsg::TestAllocate { recipient, amount } => {
             test_allocate(deps, env, info.sender, &recipient, amount)
@@ -207,7 +206,7 @@ pub fn execute(
 
 pub mod execute {
     use cosmwasm_std::{BankMsg, DistributionMsg, WasmMsg};
-    use query::{get_allocations, get_share_price, get_total_allocated};
+    use query::{get_share_price, get_total_allocated};
 
     use super::*;
 
@@ -649,82 +648,6 @@ pub mod execute {
                     total_allocated.total_allocated_share_price_denom,
                 ),
         ))
-    }
-
-    /// Distributes staking rewards to all recipients in INJ or TruINJ.
-    pub fn distribute_all(
-        mut deps: DepsMut,
-        env: Env,
-        info: MessageInfo,
-        in_inj: bool,
-    ) -> Result<Response, ContractError> {
-        check_not_paused(deps.as_ref())?;
-        let distributor = info.sender.clone();
-        whitelist::check_whitelisted(deps.as_ref(), &distributor)?;
-
-        let allocations = get_allocations(deps.as_ref(), distributor.clone())?;
-        ensure!(
-            !allocations.allocations.is_empty(),
-            ContractError::NoAllocations
-        );
-
-        let share_price = get_share_price(deps.as_ref(), &env.contract.address);
-        let mut inj_available = cw_utils::may_pay(&info, INJ)?.u128();
-        let staker_info = STAKER_INFO.load(deps.storage)?;
-
-        let mut events = Vec::new();
-        let mut response = Response::new();
-
-        // process all user allocations
-        for allocation in allocations.allocations {
-            if let Some(distribution_info) = internal_distribute(
-                deps.branch(),
-                env.clone(),
-                allocation,
-                in_inj,
-                &share_price,
-                inj_available,
-                &staker_info,
-            )? {
-                if let Some(inj_transfer) = distribution_info.inj_transfer {
-                    response = response.add_message(inj_transfer);
-                }
-                events.push(distribution_info.distribution_event);
-                inj_available = distribution_info.refund_amount;
-            }
-        }
-
-        // refund INJ to the distributor
-        if inj_available > 0 {
-            response = response.add_message(BankMsg::Send {
-                to_address: distributor.to_string(),
-                amount: vec![Coin {
-                    denom: INJ.to_string(),
-                    amount: inj_available.into(),
-                }],
-            });
-        }
-
-        let total_allocated = get_total_allocated(deps.as_ref(), distributor.clone())?;
-        for event in events {
-            response = response.add_event(
-                event
-                    .add_attribute(
-                        "total_allocated_amount",
-                        total_allocated.total_allocated_amount,
-                    )
-                    .add_attribute(
-                        "total_allocated_share_price_num",
-                        total_allocated.total_allocated_share_price_num,
-                    )
-                    .add_attribute(
-                        "total_allocated_share_price_denom",
-                        total_allocated.total_allocated_share_price_denom,
-                    ),
-            );
-        }
-
-        Ok(response.add_event(Event::new("distributed_all").add_attribute("user", distributor)))
     }
 
     /// Allows a user to withdraw all their expired claims.
