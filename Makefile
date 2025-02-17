@@ -1,6 +1,7 @@
 RFLAGS="-C link-arg=-s"
 
 build-staker:
+	rustup override	set 1.84.0
 	rustup target add wasm32-unknown-unknown
 	RUSTFLAGS=$(RFLAGS) cargo build -p injective-staker
 
@@ -36,6 +37,7 @@ check-format:
 	cargo clippy --all-features --workspace --tests -- --warn clippy::all --warn clippy::nursery
 
 check-coverage: test
+	cargo install cargo-tarpaulin
 	DYLD_LIBRARY_PATH="`pwd`/target/debug/deps" cargo tarpaulin --all-features --skip-clean --out Html --output-dir coverage-report
 
 clean:
