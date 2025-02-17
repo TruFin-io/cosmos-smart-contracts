@@ -12,6 +12,7 @@ use cw20_base::contract::{
 };
 use cw20_base::state::{MinterData, TokenInfo, MARKETING_INFO, TOKEN_INFO};
 use execute::{set_distribution_fee, set_fee, set_min_deposit};
+use query::get_total_allocated;
 
 use crate::error::ContractError;
 use crate::msg::{
@@ -19,8 +20,8 @@ use crate::msg::{
     InstantiateMsg, QueryMsg,
 };
 use crate::state::{
-    allocations, Allocation, DistributionInfo, GetValueTrait, StakerInfo, ValidatorState, CLAIMS,
-    CONTRACT_REWARDS, DEFAULT_VALIDATOR, IS_PAUSED, OWNER, STAKER_INFO, VALIDATORS,
+    allocations, Allocation, GetValueTrait, StakerInfo, ValidatorState, CLAIMS, CONTRACT_REWARDS,
+    DEFAULT_VALIDATOR, IS_PAUSED, OWNER, STAKER_INFO, VALIDATORS,
 };
 use crate::{whitelist, FEE_PRECISION, INJ, ONE_INJ, SHARE_PRICE_SCALING_FACTOR, UNBONDING_PERIOD};
 
@@ -585,7 +586,24 @@ pub mod execute {
         let staker_info = STAKER_INFO.load(deps.storage)?;
         let attached_inj_amount = cw_utils::may_pay(&info, INJ)?.u128();
 
-        let distribution_info = match internal_distribute(
+        let mut response = Response::new();
+
+        if allocation.share_price_num / allocation.share_price_denom
+            >= share_price.numerator / share_price.denominator
+        {
+            if attached_inj_amount > 0 {
+                response = response.add_message(BankMsg::Send {
+                    to_address: distributor.to_string(),
+                    amount: vec![Coin {
+                        denom: INJ.to_string(),
+                        amount: attached_inj_amount.into(),
+                    }],
+                })
+            }
+            return Ok(response);
+        }
+
+        let distribution_response = internal_distribute(
             deps.branch(),
             env,
             allocation,
@@ -593,61 +611,9 @@ pub mod execute {
             &share_price,
             attached_inj_amount,
             &staker_info,
-        )? {
-            Some(info) => info,
-            // return if there are no rewards to distribute
-            None => {
-                let response = if attached_inj_amount > 0 {
-                    Response::new().add_message(BankMsg::Send {
-                        to_address: distributor.to_string(),
-                        amount: vec![Coin {
-                            denom: INJ.to_string(),
-                            amount: attached_inj_amount.into(),
-                        }],
-                    })
-                } else {
-                    Response::new()
-                };
-                return Ok(response);
-            }
-        };
+        )?;
 
-        // prepare the response
-        let mut response: Response = Response::new();
-
-        // add the INJ transfer to the response if there is one
-        if let Some(inj_transfer) = distribution_info.inj_transfer {
-            response = response.add_message(inj_transfer);
-        }
-
-        // if there is a refund, transfer the amount to the distributor
-        if distribution_info.refund_amount > 0 {
-            response = response.add_message(BankMsg::Send {
-                to_address: distributor.to_string(),
-                amount: vec![Coin {
-                    denom: INJ.to_string(),
-                    amount: distribution_info.refund_amount.into(),
-                }],
-            });
-        }
-
-        let total_allocated = get_total_allocated(deps.as_ref(), distributor)?;
-        Ok(response.add_event(
-            distribution_info
-                .distribution_event
-                .add_attribute(
-                    "total_allocated_amount",
-                    total_allocated.total_allocated_amount,
-                )
-                .add_attribute(
-                    "total_allocated_share_price_num",
-                    total_allocated.total_allocated_share_price_num,
-                )
-                .add_attribute(
-                    "total_allocated_share_price_denom",
-                    total_allocated.total_allocated_share_price_denom,
-                ),
-        ))
+        Ok(distribution_response)
     }
 
     /// Allows a user to withdraw all their expired claims.
@@ -1741,17 +1707,10 @@ fn internal_distribute(
     global_share_price: &GetSharePriceResponse,
     attached_inj_amount: u128,
     staker_info: &StakerInfo,
-) -> Result<Option<DistributionInfo>, ContractError> {
-    // No distribution is needed if the share price of the allocation is the same as the global share price,
-    // or if it's higher due to slashing.
-    if allocation.share_price_num / allocation.share_price_denom
-        >= global_share_price.numerator / global_share_price.denominator
-    {
-        return Ok(None);
-    }
-
+) -> Result<Response, ContractError> {
     let dist_fee = staker_info.distribution_fee;
     let treasury = &staker_info.treasury;
+    let mut refund_amount = attached_inj_amount;
 
     let (assets_to_distribute, shares_to_distribute, fees) = calculate_distribution_amounts(
         &allocation,
@@ -1760,7 +1719,8 @@ fn internal_distribute(
         dist_fee,
     )?;
 
-    let inj_transfer = if in_inj {
+    let mut response = Response::new();
+    if in_inj {
         ensure!(
             attached_inj_amount >= assets_to_distribute,
             ContractError::InsufficientInjAttached
@@ -1774,13 +1734,14 @@ fn internal_distribute(
         );
 
         // return the message to send INJ to the recipient
-        Some(BankMsg::Send {
+        response = response.add_message(BankMsg::Send {
             to_address: allocation.recipient.to_string(),
             amount: vec![Coin {
                 denom: INJ.to_string(),
                 amount: assets_to_distribute.into(),
             }],
-        })
+        });
+        refund_amount -= assets_to_distribute;
     } else {
         // check that the distributor has enough TruINJ to distribute and pay the fees
         ensure!(
@@ -1802,9 +1763,6 @@ fn internal_distribute(
             allocation.recipient.to_string(),
             Uint128::from(shares_to_distribute),
         )?;
-
-        // No INJ transfer needed
-        None
     };
 
     // transfer fees to the treasury
@@ -1833,12 +1791,17 @@ fn internal_distribute(
         },
     )?;
 
-    // determine the amount of INJ to refund to the distributor
-    let refund_amount = if in_inj {
-        attached_inj_amount - assets_to_distribute
-    } else {
-        attached_inj_amount
-    };
+    if refund_amount > 0 {
+        response = response.add_message(BankMsg::Send {
+            to_address: allocation.allocator.to_string(),
+            amount: vec![Coin {
+                denom: INJ.to_string(),
+                amount: refund_amount.into(),
+            }],
+        });
+    }
+
+    let total_allocated = get_total_allocated(deps.as_ref(), allocation.allocator.clone())?;
 
     let distribution_event = Event::new("distributed_rewards")
         .add_attribute("user", allocation.allocator.clone())
@@ -1866,13 +1829,21 @@ fn internal_distribute(
         .add_attribute("inj_amount", assets_to_distribute.to_string())
         .add_attribute("in_inj", in_inj.to_string())
         .add_attribute("share_price_num", global_share_price.numerator)
-        .add_attribute("share_price_denom", global_share_price.denominator);
+        .add_attribute("share_price_denom", global_share_price.denominator)
+        .add_attribute(
+            "total_allocated_amount",
+            total_allocated.total_allocated_amount,
+        )
+        .add_attribute(
+            "total_allocated_share_price_num",
+            total_allocated.total_allocated_share_price_num,
+        )
+        .add_attribute(
+            "total_allocated_share_price_denom",
+            total_allocated.total_allocated_share_price_denom,
+        );
 
-    Ok(Some(DistributionInfo {
-        refund_amount,
-        distribution_event,
-        inj_transfer,
-    }))
+    Ok(response.add_event(distribution_event))
 }
 
 /// Mints fees to the treasury for the amount of staking rewards provided.
