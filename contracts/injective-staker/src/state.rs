@@ -1,5 +1,5 @@
 use cosmwasm_schema::cw_serde;
-use cosmwasm_std::{Addr, BankMsg, Event, Uint128, Uint256, WasmMsg};
+use cosmwasm_std::{Addr, Uint128, Uint256};
 use cw20::Expiration;
 use cw_controllers::Claims;
 use cw_storage_plus::{Index, IndexList, IndexedMap, Item, Map, MultiIndex};
@@ -67,15 +67,6 @@ pub fn allocations<'a>() -> IndexedMap<(Addr, Addr), Allocation, AllocationIndex
         ),
     };
     IndexedMap::new("allocations", indexes)
-}
-
-pub struct DistributionInfo {
-    pub transfer_msgs: Vec<WasmMsg>,
-    pub refund_amount: u128,
-    pub distributor_truinj_balance: u128,
-    pub treasury_balance: u128,
-    pub distribution_event: Event,
-    pub inj_transfer: Option<BankMsg>,
 }
 
 pub const STAKER_INFO: Item<StakerInfo> = Item::new("staker_info");
