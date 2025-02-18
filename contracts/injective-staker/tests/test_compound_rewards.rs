@@ -224,6 +224,17 @@ mod compound_rewards {
                 ("treasury_shares_minted", Uint128::from(treasury_fee_shares)).into(),
                 ("treasury_balance", Uint128::from(treasury_fee_shares)).into(),
             ],
+            contract_addr.clone(),
+        );
+
+        assert_event_with_attributes(
+            &restake_res.events,
+            "wasm",
+            vec![
+                ("action", "mint").into(),
+                ("to", treasury.to_string()).into(),
+                ("amount", Uint128::from(treasury_fee_shares)).into(),
+            ],
             contract_addr,
         );
     }

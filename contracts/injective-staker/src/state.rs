@@ -1,5 +1,5 @@
 use cosmwasm_schema::cw_serde;
-use cosmwasm_std::{Addr, BankMsg, Event, Uint128, Uint256};
+use cosmwasm_std::{Addr, BankMsg, Event, Uint128, Uint256, WasmMsg};
 use cw20::Expiration;
 use cw_controllers::Claims;
 use cw_storage_plus::{Index, IndexList, IndexedMap, Item, Map, MultiIndex};
@@ -70,7 +70,10 @@ pub fn allocations<'a>() -> IndexedMap<(Addr, Addr), Allocation, AllocationIndex
 }
 
 pub struct DistributionInfo {
+    pub transfer_msgs: Vec<WasmMsg>,
     pub refund_amount: u128,
+    pub distributor_truinj_balance: u128,
+    pub treasury_balance: u128,
     pub distribution_event: Event,
     pub inj_transfer: Option<BankMsg>,
 }
@@ -111,9 +114,9 @@ pub trait GetValueTrait {
 impl GetValueTrait for Expiration {
     fn get_value(&self) -> u64 {
         match self {
-            Expiration::AtHeight(height) => *height,
-            Expiration::AtTime(time) => time.seconds(),
-            Expiration::Never {} => 0,
+            Self::AtHeight(height) => *height,
+            Self::AtTime(time) => time.seconds(),
+            Self::Never {} => 0,
         }
     }
 }

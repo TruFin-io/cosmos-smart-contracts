@@ -3,7 +3,7 @@ pub mod helpers;
 #[cfg(test)]
 mod unstake {
 
-    use cosmwasm_std::{assert_approx_eq, to_json_binary, Addr, Uint128, WasmMsg};
+    use cosmwasm_std::{assert_approx_eq, to_json_binary, Addr, Attribute, Uint128, WasmMsg};
     use cw_multi_test::{Executor, IntoBech32};
     use helpers::{mint_inj, stake};
     use injective_staker::{
@@ -425,7 +425,7 @@ mod unstake {
 
         // user unstakes a partial amount
         let unstake_amount = 40_000;
-        let unstake_res = unstake(&mut app, &alice, &staker_addr, unstake_amount);
+        let unstake_res = unstake(&mut app, &alice, &staker_addr, unstake_amount).unwrap();
 
         // verify the correct amount of shares were burned
         let user_shares = query_truinj_balance(&app, &alice, &staker_addr);
@@ -440,6 +440,10 @@ mod unstake {
                 / pre_share_price
                 / FEE_PRECISION as u128;
 
+        // verify the treasury received the expected fees
+        let treasury_tryinj_balance = query_truinj_balance(&app, &treasury, &staker_addr);
+        assert_eq!(treasury_tryinj_balance, expected_treasury_fees);
+
         let total_supply = query_truinj_supply(&app, &staker_addr);
         assert_eq!(
             total_supply,
@@ -452,7 +456,7 @@ mod unstake {
 
         // verify the unstaked event was emitted
         assert_event_with_attributes(
-            &unstake_res.unwrap().events,
+            &unstake_res.events,
             "wasm-unstaked",
             vec![
                 ("user", alice.as_str()).into(),
@@ -473,9 +477,39 @@ mod unstake {
             staker_addr.clone(),
         );
 
-        // verify the treasury received the expected fees
-        let treasury_tryinj_balance = query_truinj_balance(&app, &treasury, &staker_addr);
-        assert_eq!(treasury_tryinj_balance, expected_treasury_fees);
+        let mut cw_20_events = unstake_res.events.iter().filter(|event| event.ty == "wasm");
+
+        assert_eq!(cw_20_events.clone().count(), 2);
+
+        let user_mint_attributes: Vec<Attribute> = vec![
+            Attribute {
+                key: "_contract_address".to_string(),
+                value: staker_addr.to_string(),
+            },
+            ("action", "burn").into(),
+            ("from", alice.as_str()).into(),
+            ("amount", &shares_burned.to_string()).into(),
+        ];
+
+        assert_eq!(
+            cw_20_events.next().unwrap().attributes,
+            user_mint_attributes
+        );
+
+        let treasury_mint_attributes: Vec<Attribute> = vec![
+            Attribute {
+                key: "_contract_address".to_string(),
+                value: staker_addr.to_string(),
+            },
+            ("action", "mint").into(),
+            ("to", &treasury.to_string()).into(),
+            ("amount", &expected_treasury_fees.to_string()).into(),
+        ];
+
+        assert_eq!(
+            cw_20_events.next().unwrap().attributes,
+            treasury_mint_attributes
+        );
     }
 
     #[test]

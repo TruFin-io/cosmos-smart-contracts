@@ -1,6 +1,6 @@
 use crate::state::{Allocation, UserStatus, ValidatorInfo};
 use cosmwasm_schema::{cw_serde, QueryResponses};
-use cosmwasm_std::{Binary, Uint128, Uint256};
+use cosmwasm_std::{Attribute, Binary, Uint128, Uint256};
 
 #[cw_serde]
 pub struct InstantiateMsg {
@@ -98,6 +98,9 @@ pub enum ExecuteMsg {
     Restake {
         amount: Uint128,
         validator_addr: String,
+    },
+    EmitEvent {
+        attributes: Vec<Attribute>,
     },
     // Test messages
     #[cfg(any(test, feature = "test"))]

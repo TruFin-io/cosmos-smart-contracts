@@ -2,7 +2,7 @@
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
     ensure, to_json_binary, Addr, BankMsg, Binary, Coin, Deps, DepsMut, Env, Event, MessageInfo,
-    Response, StakingMsg, StdResult, Uint128, Uint256, Uint512,
+    Response, StakingMsg, StdResult, Uint128, Uint256, Uint512, WasmMsg,
 };
 use cw2::set_contract_version;
 use cw20::{LogoInfo, MarketingInfoResponse};
@@ -180,6 +180,7 @@ pub fn execute(
             amount,
             validator_addr,
         } => execute::_restake(deps, env, info.sender, amount, validator_addr),
+        ExecuteMsg::EmitEvent { attributes } => execute::_emit_event(env, info.sender, attributes),
         ExecuteMsg::Allocate { recipient, amount } => {
             execute::allocate(deps, env, info.sender, &recipient, amount)
         }
@@ -206,7 +207,7 @@ pub fn execute(
 }
 
 pub mod execute {
-    use cosmwasm_std::{BankMsg, DistributionMsg, WasmMsg};
+    use cosmwasm_std::{Attribute, BankMsg, DistributionMsg, WasmMsg};
     use query::{get_share_price, get_total_allocated};
 
     use super::*;
@@ -583,11 +584,12 @@ pub mod execute {
         // distribute rewards for the current share price
         let contract_addr = env.contract.address.clone();
         let share_price = get_share_price(deps.as_ref(), &contract_addr);
-        let staker_info = STAKER_INFO.load(deps.storage)?;
         let attached_inj_amount = cw_utils::may_pay(&info, INJ)?.u128();
 
         let mut response = Response::new();
 
+        // No distribution is needed if the share price of the allocation is the same as the global share price,
+        // or if it's higher due to slashing.
         if allocation.share_price_num / allocation.share_price_denom
             >= share_price.numerator / share_price.denominator
         {
@@ -602,6 +604,8 @@ pub mod execute {
             }
             return Ok(response);
         }
+
+        let staker_info = STAKER_INFO.load(deps.storage)?;
 
         let distribution_response = internal_distribute(
             deps.branch(),
@@ -834,7 +838,7 @@ pub mod execute {
         let fees: u128 = total_rewards * u128::from(staker_info.fee) / u128::from(FEE_PRECISION);
         let mut treasury_share_increase = Uint128::from(0u128);
 
-        if fees > 0 {
+        let mut res = if fees > 0 {
             let shares_supply = TOKEN_INFO.load(deps.storage)?.total_supply;
 
             let contract_rewards: Uint128 = CONTRACT_REWARDS.load(deps.storage)?;
@@ -862,10 +866,12 @@ pub mod execute {
                 minter_info,
                 staker_info.treasury.clone().into_string(),
                 treasury_share_increase,
-            )?;
-        }
+            )?
+        } else {
+            Response::new()
+        };
 
-        let res = Response::new()
+        res = res
             .add_messages(collect_rewards_messages)
             .add_messages(restake_messages)
             .add_event(
@@ -905,6 +911,16 @@ pub mod execute {
                 amount: restake_amount,
             },
         });
+        Ok(res)
+    }
+
+    pub fn _emit_event(
+        env: Env,
+        sender: Addr,
+        attributes: Vec<Attribute>,
+    ) -> Result<Response, ContractError> {
+        ensure!(sender == env.contract.address, ContractError::Unauthorized);
+        let res = Response::new().add_attributes(attributes);
         Ok(res)
     }
 }
@@ -1415,33 +1431,55 @@ fn internal_stake(
 
     CONTRACT_REWARDS.save(deps.storage, &validator_total_rewards.into())?;
 
-    // mint fees to the treasury for the liquid rewards on the validator
-    let treasury_shares_minted = mint_treasury_fees(
-        &mut deps,
-        &env,
-        validator_total_rewards,
-        fee,
-        staker_info.treasury.clone(),
-        share_price_num,
-        share_price_denom,
-    )?;
-
     // calculate the shares to mint to the user
     let user_shares_increase = convert_to_shares(stake_amount, share_price_num, share_price_denom)?;
 
     // mint shares to the user
     let contract_addr = env.contract.address.clone();
-    execute_mint(
+
+    let mut mint_res = execute_mint(
         deps.branch(),
-        env,
+        env.clone(),
         MessageInfo {
-            sender: contract_addr,
+            sender: contract_addr.clone(),
             funds: vec![],
         },
         user.clone(),
         user_shares_increase,
     )?;
-    let user_balance = query_balance(deps.as_ref(), user)?.balance;
+
+    // calculate the fees to mint to the treasury for the liquid rewards on the validator
+    let treasury_shares_to_mint = calculate_treasury_fees(
+        validator_total_rewards,
+        fee,
+        share_price_num,
+        share_price_denom,
+    )?;
+
+    if !treasury_shares_to_mint.is_zero() {
+        // As we are executing two cw_20 actions in one transaction, we must add one action event as a submessage
+        // to ensure separate wasm events are emitted for both actions so that they may be correctly indexed.
+        let fee_mint = execute_mint(
+            deps.branch(),
+            env,
+            MessageInfo {
+                sender: contract_addr.clone(),
+                funds: vec![],
+            },
+            staker_info.treasury.clone().into_string(),
+            treasury_shares_to_mint,
+        )?;
+        let fee_event_msg = to_json_binary(&ExecuteMsg::EmitEvent {
+            attributes: fee_mint.attributes,
+        })?;
+
+        let cw_20_msg = WasmMsg::Execute {
+            contract_addr: contract_addr.into_string(),
+            msg: fee_event_msg,
+            funds: vec![],
+        };
+        mint_res = mint_res.add_message(cw_20_msg);
+    }
 
     // sweep contract rewards
     let new_stake_amount = stake_amount + contract_rewards;
@@ -1455,20 +1493,21 @@ fn internal_stake(
         },
     };
 
-    let new_shares_total_supply = shares_supply + user_shares_increase + treasury_shares_minted;
+    let new_shares_total_supply = shares_supply + user_shares_increase + treasury_shares_to_mint;
 
-    Ok(Response::new().add_message(delegate_msg).add_event(
+    let user_balance = query_balance(deps.as_ref(), user)?.balance;
+    let treasury_balance =
+        query_balance(deps.as_ref(), staker_info.treasury.into_string())?.balance;
+
+    Ok(mint_res.add_message(delegate_msg).add_event(
         Event::new("deposited")
             .add_attribute("user", info.sender)
             .add_attribute("validator_addr", validator_addr)
             .add_attribute("amount", stake_amount)
             .add_attribute("contract_rewards", contract_rewards)
             .add_attribute("user_shares_minted", user_shares_increase)
-            .add_attribute("treasury_shares_minted", treasury_shares_minted)
-            .add_attribute(
-                "treasury_balance",
-                query_balance(deps.as_ref(), staker_info.treasury.into_string())?.balance,
-            )
+            .add_attribute("treasury_shares_minted", treasury_shares_to_mint)
+            .add_attribute("treasury_balance", treasury_balance)
             .add_attribute(
                 "total_staked",
                 Uint128::from(total_staked) + new_stake_amount,
@@ -1538,7 +1577,7 @@ fn internal_unstake(
 
     let (validator_total_staked, validator_total_rewards) = deps
         .querier
-        .query_delegation(contract_addr, validator_addr.clone())?
+        .query_delegation(contract_addr.clone(), validator_addr.clone())?
         .map(|d| {
             let total_staked = d.amount.amount.u128();
             let total_rewards = d
@@ -1590,26 +1629,44 @@ fn internal_unstake(
         expiration,
     )?;
 
-    // mint fees to the treasury for the liquid rewards on the validator
-    let treasury_shares_minted = mint_treasury_fees(
-        &mut deps,
-        &env,
+    // burn the user shares
+    let mut res = execute_burn(deps.branch(), env.clone(), info, shares_to_burn.into())?;
+
+    // calculate the fees to mint to the treasury for the liquid rewards on the validator
+    let treasury_shares_to_mint = calculate_treasury_fees(
         validator_total_rewards,
         fee,
-        staker_info.treasury.clone(),
         share_price_num,
         share_price_denom,
     )?;
 
-    // burn the user shares
-    execute_burn(deps.branch(), env, info, shares_to_burn.into())?;
-    let user_shares_balance = query_balance(deps.as_ref(), user_addr.to_string())?.balance;
+    if !treasury_shares_to_mint.is_zero() {
+        // // As we are executing two cw_20 actions in one transaction, we must add one action event as a submessage
+        // // to ensure separate wasm events are emitted for both actions so that they may be correctly indexed.
+        let fee_mint = execute_mint(
+            deps.branch(),
+            env,
+            MessageInfo {
+                sender: contract_addr.clone(),
+                funds: vec![],
+            },
+            staker_info.treasury.clone().into_string(),
+            treasury_shares_to_mint,
+        )?;
+        let fee_event_msg = to_json_binary(&ExecuteMsg::EmitEvent {
+            attributes: fee_mint.attributes,
+        })?;
+
+        let cw_20_msg = WasmMsg::Execute {
+            contract_addr: contract_addr.into_string(),
+            msg: fee_event_msg,
+            funds: vec![],
+        };
+        res = res.add_message(cw_20_msg);
+    }
 
     let new_total_staked = total_staked - actual_amount_to_unstake;
-    let new_shares_supply = shares_supply + treasury_shares_minted.u128() - shares_to_burn;
-
-    // send undelegate message and emit event
-    let mut res: Response = Response::new();
+    let new_shares_supply = shares_supply + treasury_shares_to_mint.u128() - shares_to_burn;
 
     // check if any INJ needs to be unstaked
     if actual_amount_to_unstake > 0 {
@@ -1622,6 +1679,10 @@ fn internal_unstake(
         });
     }
 
+    let user_shares_balance = query_balance(deps.as_ref(), user_addr.to_string())?.balance;
+    let treasury_balance =
+        query_balance(deps.as_ref(), staker_info.treasury.into_string())?.balance;
+
     Ok(res.add_event(
         Event::new("unstaked")
             .add_attribute("user", user_addr)
@@ -1629,11 +1690,11 @@ fn internal_unstake(
             .add_attribute("validator_addr", validator_addr)
             .add_attribute("user_balance", user_shares_balance)
             .add_attribute("user_shares_burned", shares_to_burn.to_string())
-            .add_attribute("treasury_shares_minted", treasury_shares_minted.to_string())
             .add_attribute(
-                "treasury_balance",
-                query_balance(deps.as_ref(), staker_info.treasury.into_string())?.balance,
+                "treasury_shares_minted",
+                treasury_shares_to_mint.to_string(),
             )
+            .add_attribute("treasury_balance", treasury_balance)
             .add_attribute("total_staked", new_total_staked.to_string())
             .add_attribute("total_supply", new_shares_supply.to_string())
             .add_attribute("expires_at", expiration.get_value().to_string()),
@@ -1726,7 +1787,7 @@ fn internal_distribute(
             ContractError::InsufficientInjAttached
         );
         ensure!(
-            query_balance(deps.as_ref(), allocation.allocator.to_string())?
+            query_balance(deps.as_ref(), allocation.allocator.clone().into_string())?
                 .balance
                 .u128()
                 >= fees,
@@ -1745,7 +1806,7 @@ fn internal_distribute(
     } else {
         // check that the distributor has enough TruINJ to distribute and pay the fees
         ensure!(
-            query_balance(deps.as_ref(), allocation.allocator.to_string())?
+            query_balance(deps.as_ref(), allocation.allocator.clone().into_string())?
                 .balance
                 .u128()
                 >= shares_to_distribute + fees,
@@ -1753,7 +1814,7 @@ fn internal_distribute(
         );
 
         // transfer the rewards in TruINJ to the recipient
-        execute_transfer(
+        let transfer_res = execute_transfer(
             deps.branch(),
             env.clone(),
             MessageInfo {
@@ -1763,13 +1824,25 @@ fn internal_distribute(
             allocation.recipient.to_string(),
             Uint128::from(shares_to_distribute),
         )?;
+
+        let transfer_event_msg = to_json_binary(&ExecuteMsg::EmitEvent {
+            attributes: transfer_res.attributes,
+        })?;
+
+        let cw_20_msg = WasmMsg::Execute {
+            contract_addr: env.contract.address.clone().into_string(),
+            msg: transfer_event_msg,
+            funds: vec![],
+        };
+        response = response.add_message(cw_20_msg);
     };
 
     // transfer fees to the treasury
     if fees > 0 {
-        execute_transfer(
+        // transfer the rewards in TruINJ to the recipient
+        let transfer_fee_res = execute_transfer(
             deps.branch(),
-            env,
+            env.clone(),
             MessageInfo {
                 sender: allocation.allocator.clone(),
                 funds: vec![],
@@ -1777,6 +1850,17 @@ fn internal_distribute(
             treasury.to_string(),
             Uint128::from(fees),
         )?;
+
+        let transfer_fee_event_msg = to_json_binary(&ExecuteMsg::EmitEvent {
+            attributes: transfer_fee_res.attributes,
+        })?;
+
+        let cw_20_msg = WasmMsg::Execute {
+            contract_addr: env.contract.address.into_string(),
+            msg: transfer_fee_event_msg,
+            funds: vec![],
+        };
+        response = response.add_message(cw_20_msg);
     }
 
     // update the share price of the allocation
@@ -1802,28 +1886,18 @@ fn internal_distribute(
     }
 
     let total_allocated = get_total_allocated(deps.as_ref(), allocation.allocator.clone())?;
+    let recipient_balance =
+        query_balance(deps.as_ref(), allocation.recipient.clone().into_string())?.balance;
+    let treasury_balance = query_balance(deps.as_ref(), treasury.clone().into_string())?.balance;
+    let user_balance =
+        query_balance(deps.as_ref(), allocation.allocator.clone().into_string())?.balance;
 
     let distribution_event = Event::new("distributed_rewards")
         .add_attribute("user", allocation.allocator.clone())
-        .add_attribute("recipient", allocation.recipient.clone())
-        .add_attribute(
-            "user_balance",
-            query_balance(deps.as_ref(), allocation.allocator.to_string())?
-                .balance
-                .to_string(),
-        )
-        .add_attribute(
-            "recipient_balance",
-            query_balance(deps.as_ref(), allocation.recipient.to_string())?
-                .balance
-                .to_string(),
-        )
-        .add_attribute(
-            "treasury_balance",
-            query_balance(deps.as_ref(), treasury.to_string())?
-                .balance
-                .to_string(),
-        )
+        .add_attribute("recipient", allocation.recipient)
+        .add_attribute("user_balance", user_balance.to_string())
+        .add_attribute("recipient_balance", recipient_balance.to_string())
+        .add_attribute("treasury_balance", treasury_balance.to_string())
         .add_attribute("fees", fees.to_string())
         .add_attribute("shares", shares_to_distribute.to_string())
         .add_attribute("inj_amount", assets_to_distribute.to_string())
@@ -1847,12 +1921,9 @@ fn internal_distribute(
 }
 
 /// Mints fees to the treasury for the amount of staking rewards provided.
-fn mint_treasury_fees(
-    deps: &mut DepsMut<'_>,
-    env: &Env,
+fn calculate_treasury_fees(
     rewards: u128,
     fee: u16,
-    treasury_addr: Addr,
     share_price_num: Uint256,
     share_price_denom: Uint256,
 ) -> Result<Uint128, ContractError> {
@@ -1863,17 +1934,6 @@ fn mint_treasury_fees(
     let fees = rewards * fee as u128 / FEE_PRECISION as u128;
     let treasury_shares_increase =
         convert_to_shares(Uint128::from(fees), share_price_num, share_price_denom)?;
-
-    execute_mint(
-        deps.branch(),
-        env.clone(),
-        MessageInfo {
-            sender: env.contract.address.clone(),
-            funds: vec![],
-        },
-        treasury_addr.to_string(),
-        treasury_shares_increase,
-    )?;
     Ok(treasury_shares_increase)
 }
 
@@ -1984,7 +2044,7 @@ pub fn test_mint(
     recipient: Addr,
     amount: Uint128,
 ) -> Result<Response, ContractError> {
-    execute_mint(
+    let mint_res = execute_mint(
         deps,
         env,
         MessageInfo {
@@ -1995,7 +2055,7 @@ pub fn test_mint(
         amount,
     )?;
 
-    Ok(Response::new().add_event(Event::new("minted")))
+    Ok(mint_res.add_event(Event::new("minted")))
 }
 
 #[cfg(any(test, feature = "test"))]

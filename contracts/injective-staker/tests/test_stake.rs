@@ -10,7 +10,7 @@ mod stake {
         move_days_forward, pause, query_truinj_balance, query_truinj_supply, set_fee,
         stake_to_specific_validator, stake_when_rewards_accrued, whitelist_user,
     };
-    use cosmwasm_std::{Addr, Decimal, Uint128, Uint256};
+    use cosmwasm_std::{Addr, Attribute, Decimal, Uint128, Uint256};
     use cw_multi_test::{IntoBech32, StakingSudo};
     use helpers::{mint_inj, stake};
     use injective_staker::{
@@ -68,7 +68,27 @@ mod stake {
                 ("share_price_denom", Uint256::one()).into(),
                 ("user_balance", event_attribute_staked).into(),
             ],
+            contract_addr.clone(),
+        );
+
+        assert_event_with_attributes(
+            &stake_res.events,
+            "wasm",
+            vec![
+                ("action", "mint").into(),
+                ("to", anyone.to_string()).into(),
+                ("amount", event_attribute_staked).into(),
+            ],
             contract_addr,
+        );
+
+        assert_eq!(
+            stake_res
+                .events
+                .iter()
+                .filter(|event| event.ty == "wasm")
+                .count(),
+            1
         );
     }
 
@@ -286,6 +306,40 @@ mod stake {
                 ("user_balance", expected_user_shares).into(),
             ],
             contract_addr.clone(),
+        );
+
+        let mut cw_20_events = stake_res.events.iter().filter(|event| event.ty == "wasm");
+
+        assert_eq!(cw_20_events.clone().count(), 2);
+
+        let user_mint_attributes: Vec<Attribute> = vec![
+            Attribute {
+                key: "_contract_address".to_string(),
+                value: contract_addr.to_string(),
+            },
+            ("action", "mint").into(),
+            ("to", &anyone.to_string()).into(),
+            ("amount", &user_shares_balance.to_string()).into(),
+        ];
+
+        assert_eq!(
+            cw_20_events.next().unwrap().attributes,
+            user_mint_attributes
+        );
+
+        let treasury_mint_attributes: Vec<Attribute> = vec![
+            Attribute {
+                key: "_contract_address".to_string(),
+                value: contract_addr.to_string(),
+            },
+            ("action", "mint").into(),
+            ("to", &treasury.to_string()).into(),
+            ("amount", &expected_treasury_fees.to_string()).into(),
+        ];
+
+        assert_eq!(
+            cw_20_events.next().unwrap().attributes,
+            treasury_mint_attributes
         );
 
         // verify the treasury received the expected fees
