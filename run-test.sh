@@ -21,4 +21,9 @@ printf "${WHITE_ON_BLUE} Running tests...${NO_COLOR}\n"
 make test
 stop_if_failure $? # $? is the exit status of the last command
 
+# run coverage
+printf "${WHITE_ON_BLUE} Running coverage...${NO_COLOR}\n"
+make check-coverage
+stop_if_failure $? # $? is the exit status of the last command
+
 exit 0

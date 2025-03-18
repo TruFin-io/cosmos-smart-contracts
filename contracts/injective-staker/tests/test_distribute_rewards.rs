@@ -3,7 +3,7 @@ pub mod helpers;
 #[cfg(test)]
 mod distribute_rewards {
 
-    use cosmwasm_std::{coin, to_json_binary, Decimal, WasmMsg};
+    use cosmwasm_std::{coin, to_json_binary, Attribute, Decimal, WasmMsg};
     use cw_multi_test::{Executor, IntoBech32, StakingSudo};
     use injective_staker::{msg::ExecuteMsg, INJ};
 
@@ -56,21 +56,21 @@ mod distribute_rewards {
             get_distribution_amounts(&app, &staker_addr, &distributor, Some(&recipient));
 
         // distribute rewards to recipient at the current share price in truinj
-        let dist_res = app.execute(
-            distributor.clone(),
-            WasmMsg::Execute {
-                contract_addr: staker_addr.to_string(),
-                msg: to_json_binary(&ExecuteMsg::DistributeRewards {
-                    recipient: recipient.to_string(),
-                    in_inj: false,
-                })
-                .unwrap(),
-                funds: vec![],
-            }
-            .into(),
-        );
-
-        assert!(dist_res.is_ok());
+        let dist_res = app
+            .execute(
+                distributor.clone(),
+                WasmMsg::Execute {
+                    contract_addr: staker_addr.to_string(),
+                    msg: to_json_binary(&ExecuteMsg::DistributeRewards {
+                        recipient: recipient.to_string(),
+                        in_inj: false,
+                    })
+                    .unwrap(),
+                    funds: vec![],
+                }
+                .into(),
+            )
+            .unwrap();
 
         let distributor_truinj_balance = query_truinj_balance(&app, &distributor, &staker_addr);
         let recipient_truinj_balance = query_truinj_balance(&app, &recipient, &staker_addr);
@@ -95,11 +95,11 @@ mod distribute_rewards {
         ) = get_total_allocated(&app, &staker_addr, &distributor);
 
         assert_event_with_attributes(
-            &dist_res.unwrap().events,
+            &dist_res.events,
             "wasm-distributed_rewards",
             vec![
-                ("user", distributor).into(),
-                ("recipient", recipient).into(),
+                ("user", distributor.clone()).into(),
+                ("recipient", recipient.clone()).into(),
                 ("user_balance", distributor_truinj_balance.to_string()).into(),
                 ("recipient_balance", recipient_truinj_balance.to_string()).into(),
                 ("treasury_balance", treasury_truinj_balance.to_string()).into(),
@@ -121,7 +121,43 @@ mod distribute_rewards {
                 )
                     .into(),
             ],
-            staker_addr,
+            staker_addr.clone(),
+        );
+
+        let mut cw_20_events = dist_res.events.iter().filter(|event| event.ty == "wasm");
+
+        assert_eq!(cw_20_events.clone().count(), 2);
+
+        let user_transfer_attributes: Vec<Attribute> = vec![
+            Attribute {
+                key: "_contract_address".to_string(),
+                value: staker_addr.to_string(),
+            },
+            ("action", "transfer").into(),
+            ("from", distributor.as_str()).into(),
+            ("to", &recipient.to_string()).into(),
+            ("amount", &truinj_to_distribute.to_string()).into(),
+        ];
+
+        assert_eq!(
+            cw_20_events.next().unwrap().attributes,
+            user_transfer_attributes
+        );
+
+        let treasury_transfer_attributes: Vec<Attribute> = vec![
+            Attribute {
+                key: "_contract_address".to_string(),
+                value: staker_addr.to_string(),
+            },
+            ("action", "transfer").into(),
+            ("from", distributor.as_str()).into(),
+            ("to", &treasury.to_string()).into(),
+            ("amount", &fees.to_string()).into(),
+        ];
+
+        assert_eq!(
+            cw_20_events.next().unwrap().attributes,
+            treasury_transfer_attributes
         );
     }
 
@@ -227,20 +263,21 @@ mod distribute_rewards {
         assert_eq!(pre_treasury_truinj_balance, 0);
 
         // distribute rewards to recipient in trunj
-        let dist_res = app.execute(
-            distributor.clone(),
-            WasmMsg::Execute {
-                contract_addr: staker_addr.to_string(),
-                msg: to_json_binary(&ExecuteMsg::DistributeRewards {
-                    recipient: recipient.to_string(),
-                    in_inj: false,
-                })
-                .unwrap(),
-                funds: vec![],
-            }
-            .into(),
-        );
-        assert!(dist_res.is_ok());
+        let dist_res = app
+            .execute(
+                distributor.clone(),
+                WasmMsg::Execute {
+                    contract_addr: staker_addr.to_string(),
+                    msg: to_json_binary(&ExecuteMsg::DistributeRewards {
+                        recipient: recipient.to_string(),
+                        in_inj: false,
+                    })
+                    .unwrap(),
+                    funds: vec![],
+                }
+                .into(),
+            )
+            .unwrap();
 
         // verify the distributor balance was not reduced
         let distributor_truinj_balance = query_truinj_balance(&app, &distributor, &staker_addr);
@@ -257,10 +294,19 @@ mod distribute_rewards {
         // verify no wasm-distributed_rewards event were emitted
         assert_eq!(
             dist_res
-                .unwrap()
+                .clone()
                 .events
                 .into_iter()
                 .filter(|e| e.ty == "wasm-distributed_rewards")
+                .count(),
+            0
+        );
+
+        assert_eq!(
+            dist_res
+                .events
+                .into_iter()
+                .filter(|e| e.ty == "wasm")
                 .count(),
             0
         );
@@ -557,21 +603,21 @@ mod distribute_rewards {
         mint_inj(&mut app, &distributor, inj_to_distribute);
 
         // distribute rewards to recipient in inj attaching the exact amount of inj to distribute
-        let dist_res = app.execute(
-            distributor.clone(),
-            WasmMsg::Execute {
-                contract_addr: staker_addr.to_string(),
-                msg: to_json_binary(&ExecuteMsg::DistributeRewards {
-                    recipient: recipient.to_string(),
-                    in_inj: true,
-                })
-                .unwrap(),
-                funds: vec![coin(inj_to_distribute, INJ)],
-            }
-            .into(),
-        );
-
-        assert!(dist_res.is_ok());
+        let dist_res = app
+            .execute(
+                distributor.clone(),
+                WasmMsg::Execute {
+                    contract_addr: staker_addr.to_string(),
+                    msg: to_json_binary(&ExecuteMsg::DistributeRewards {
+                        recipient: recipient.to_string(),
+                        in_inj: true,
+                    })
+                    .unwrap(),
+                    funds: vec![coin(inj_to_distribute, INJ)],
+                }
+                .into(),
+            )
+            .unwrap();
 
         let distributor_truinj_balance = query_truinj_balance(&app, &distributor, &staker_addr);
         let recipient_truinj_balance = query_truinj_balance(&app, &recipient, &staker_addr);
@@ -597,11 +643,11 @@ mod distribute_rewards {
         ) = get_total_allocated(&app, &staker_addr, &distributor);
 
         assert_event_with_attributes(
-            &dist_res.unwrap().events,
+            &dist_res.events,
             "wasm-distributed_rewards",
             vec![
-                ("user", distributor).into(),
-                ("recipient", recipient).into(),
+                ("user", distributor.clone()).into(),
+                ("recipient", recipient.clone()).into(),
                 ("user_balance", distributor_truinj_balance.to_string()).into(),
                 ("recipient_balance", recipient_truinj_balance.to_string()).into(),
                 ("treasury_balance", treasury_truinj_balance.to_string()).into(),
@@ -622,6 +668,18 @@ mod distribute_rewards {
                     total_allocated_share_price_denom,
                 )
                     .into(),
+            ],
+            staker_addr.clone(),
+        );
+
+        assert_event_with_attributes(
+            &dist_res.events,
+            "wasm",
+            vec![
+                ("action", "transfer").into(),
+                ("from", distributor.as_str()).into(),
+                ("to", &treasury.to_string()).into(),
+                ("amount", &fees.to_string()).into(),
             ],
             staker_addr,
         );

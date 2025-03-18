@@ -29,4 +29,5 @@ cw-controllers = "2.0.0"
 
 [dev-dependencies]
 cw-multi-test = { version = "2.1.1", features = ["staking"]}
-injective-test-tube = { version = "1.13.2"  }
+injective-test-tube = { version = "1.13.2" }
+cargo-tarpaulin = { version = "0.31.4" }
