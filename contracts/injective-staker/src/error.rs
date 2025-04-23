@@ -101,6 +101,9 @@ pub enum ContractError {
     #[error("Unstake amount too low")]
     UnstakeAmountTooLow,
 
+    #[error("Redelegate amount too low")]
+    RedelegateAmountTooLow,
+
     #[error("Shares amount too low")]
     SharesAmountTooLow,
 

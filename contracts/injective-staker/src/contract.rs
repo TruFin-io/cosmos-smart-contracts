@@ -17,7 +17,7 @@ use query::get_total_allocated;
 use crate::error::ContractError;
 use crate::msg::{
     ExecuteMsg, GetDistributionAmountsResponse, GetSharePriceResponse, GetStakerInfoResponse,
-    InstantiateMsg, QueryMsg,
+    InstantiateMsg, MigrateMsg, QueryMsg,
 };
 use crate::state::{
     allocations, Allocation, GetValueTrait, StakerInfo, ValidatorState, CLAIMS, CONTRACT_REWARDS,
@@ -28,6 +28,12 @@ use crate::{whitelist, FEE_PRECISION, INJ, ONE_INJ, SHARE_PRICE_SCALING_FACTOR, 
 // version info for contract migrations
 const CONTRACT_NAME: &str = "crates.io:injective-staker";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[cfg_attr(not(feature = "library"), entry_point)]
+pub fn migrate(deps: DepsMut, _env: Env, _msg: MigrateMsg) -> Result<Response, ContractError> {
+    cw2::ensure_from_older_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
+    Ok(Response::default())
+}
 
 /// Entry point to instantiate the contract.
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -147,6 +153,18 @@ pub fn execute(
         } => {
             execute::unstake_from_specific_validator(deps, env, info, validator_addr, amount.u128())
         }
+        ExecuteMsg::Redelegate {
+            src_validator_addr,
+            dst_validator_addr,
+            assets,
+        } => execute::redelegate(
+            deps,
+            env.contract.address,
+            info.sender,
+            src_validator_addr,
+            dst_validator_addr,
+            assets.u128(),
+        ),
         ExecuteMsg::Claim {} => execute::claim(deps, env, info.sender),
         ExecuteMsg::SetPendingOwner { new_owner } => {
             execute::set_pending_owner(deps, info.sender, &new_owner)
@@ -392,6 +410,26 @@ pub mod execute {
 
         let unstake_res = internal_unstake(deps, env, info, validator_addr, amount)?;
         Ok(unstake_res)
+    }
+
+    pub fn redelegate(
+        deps: DepsMut,
+        contract_addr: Addr,
+        sender: Addr,
+        src_validator_addr: String,
+        dst_validator_addr: String,
+        assets: u128,
+    ) -> Result<Response, ContractError> {
+        check_owner(deps.as_ref(), &sender)?;
+
+        let redelegate_res = internal_redelegate(
+            deps,
+            contract_addr,
+            src_validator_addr,
+            dst_validator_addr,
+            assets,
+        )?;
+        Ok(redelegate_res)
     }
 
     /// Sets a pending owner. The pending owner has no contract privileges.
@@ -1698,6 +1736,79 @@ fn internal_unstake(
             .add_attribute("total_staked", new_total_staked.to_string())
             .add_attribute("total_supply", new_shares_supply.to_string())
             .add_attribute("expires_at", expiration.get_value().to_string()),
+    ))
+}
+
+fn internal_redelegate(
+    deps: DepsMut,
+    contract_addr: Addr,
+    src_validator_addr: String,
+    dst_validator_addr: String,
+    assets: u128,
+) -> Result<Response, ContractError> {
+    // check that the src and dst validators exist
+    check_validator(deps.as_ref(), &src_validator_addr)?;
+    check_validator(deps.as_ref(), &dst_validator_addr)?;
+
+    // check that the amount of assets to redelegate is greater than 0
+    ensure!(assets > 0, ContractError::RedelegateAmountTooLow);
+
+    let (src_validator_total_staked, src_validator_total_rewards) = deps
+        .querier
+        .query_delegation(contract_addr.clone(), src_validator_addr.clone())?
+        .map(|d| {
+            let total_staked = d.amount.amount.u128();
+            let total_rewards = d
+                .accumulated_rewards
+                .iter()
+                .find(|coin| coin.denom == INJ)
+                .map(|reward| reward.amount.u128())
+                .unwrap_or(0);
+            (total_staked, total_rewards)
+        })
+        .unwrap_or((0, 0));
+
+    // check the validator has enough shares
+    ensure!(
+        assets <= src_validator_total_staked,
+        ContractError::InsufficientValidatorFunds
+    );
+
+    let dst_validator_total_rewards = deps
+        .querier
+        .query_delegation(contract_addr.clone(), dst_validator_addr.clone())?
+        .and_then(|d| {
+            d.accumulated_rewards
+                .iter()
+                .find(|coin| coin.denom == INJ)
+                .cloned()
+        })
+        .map(|reward| reward.amount.u128())
+        .unwrap_or(0);
+
+    // when redelegating, all accrued rewards are moved into the contract.
+    CONTRACT_REWARDS.update(deps.storage, |mut rewards| -> Result<_, ContractError> {
+        rewards = rewards
+            + Uint128::from(src_validator_total_rewards)
+            + Uint128::from(dst_validator_total_rewards);
+        Ok(rewards)
+    })?;
+
+    let mut res = Response::new();
+    res = res.add_message(StakingMsg::Redelegate {
+        src_validator: src_validator_addr.clone(),
+        dst_validator: dst_validator_addr.clone(),
+        amount: Coin {
+            denom: INJ.to_string(),
+            amount: assets.into(),
+        },
+    });
+
+    Ok(res.add_event(
+        Event::new("redelegated")
+            .add_attribute("src_validator", src_validator_addr)
+            .add_attribute("dst_validator", dst_validator_addr)
+            .add_attribute("assets", assets.to_string()),
     ))
 }
 

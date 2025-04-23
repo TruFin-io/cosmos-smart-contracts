@@ -10,6 +10,9 @@ pub struct InstantiateMsg {
 }
 
 #[cw_serde]
+pub struct MigrateMsg {}
+
+#[cw_serde]
 pub enum ExecuteMsg {
     SetFee {
         new_fee: u16,
@@ -48,6 +51,11 @@ pub enum ExecuteMsg {
     UnstakeFromSpecificValidator {
         validator_addr: String,
         amount: Uint128,
+    },
+    Redelegate {
+        src_validator_addr: String,
+        dst_validator_addr: String,
+        assets: Uint128,
     },
     Claim {},
     AddValidator {

@@ -1,6 +1,6 @@
 target/
 artifacts/*
-
+contracts/injective-staker/tests/test_artifacts/
 .idea/
 
 .DS_Store
