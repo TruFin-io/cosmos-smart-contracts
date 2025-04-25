@@ -386,6 +386,29 @@ pub fn unstake_when_rewards_accrue(
     unstake_res
 }
 
+pub fn redelegate(
+    app: &mut App,
+    sender: &Addr,
+    contract_addr: &Addr,
+    src_validator_addr: &Addr,
+    dst_validator_addr: &Addr,
+    assets: u128,
+) -> Result<AppResponse, AnyError> {
+    let msg = ExecuteMsg::Redelegate {
+        src_validator_addr: src_validator_addr.to_string(),
+        dst_validator_addr: dst_validator_addr.to_string(),
+        assets: assets.into(),
+    };
+
+    let cosmos_msg = WasmMsg::Execute {
+        contract_addr: contract_addr.to_string(),
+        msg: to_json_binary(&msg).unwrap(),
+        funds: vec![],
+    };
+
+    app.execute(sender.clone(), cosmos_msg.into())
+}
+
 pub fn set_up_allocation(
     app: &mut App,
     owner: &Addr,
